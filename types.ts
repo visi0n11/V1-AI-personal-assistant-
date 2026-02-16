@@ -1,11 +1,13 @@
 
-export enum ModuleType {
-  VOICE = 'voice',
-  STUDY = 'study',
-  COMMUNICATION = 'communication',
-  NOTIFICATIONS = 'notifications',
-  MULTIMEDIA = 'multimedia'
-}
+export const ModuleType = {
+  VOICE: 'voice',
+  STUDY: 'study',
+  COMMUNICATION: 'communication',
+  NOTIFICATIONS: 'notifications',
+  MULTIMEDIA: 'multimedia'
+} as const;
+
+export type ModuleType = typeof ModuleType[keyof typeof ModuleType];
 
 export interface Note {
   id: string;

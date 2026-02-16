@@ -26,6 +26,15 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
   const sourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
   const sessionRef = useRef<any>(null);
 
+  // Safety check for API key presence
+  const getApiKey = () => {
+    try {
+      return (typeof process !== 'undefined' && process.env?.API_KEY) || '';
+    } catch (e) {
+      return '';
+    }
+  };
+
   const decode = (base64: string) => {
     const binaryString = atob(base64);
     const bytes = new Uint8Array(binaryString.length);
@@ -87,8 +96,14 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
   const startSession = async () => {
     try {
       setError(null);
+      const apiKey = getApiKey();
+      if (!apiKey) {
+        setError('System API key is missing. Please check configuration.');
+        return;
+      }
+
       setStatus('Connecting...');
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
+      const ai = new GoogleGenAI({ apiKey });
       const AudioContextClass = (window.AudioContext || (window as any).webkitAudioContext);
       const inputCtx = new AudioContextClass({ sampleRate: 16000 });
       const outputCtx = new AudioContextClass({ sampleRate: 24000 });
@@ -127,7 +142,10 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
                 if (fc.name === 'add_task') result = handlers.addTask(fc.args.text as string);
                 if (fc.name === 'send_message') result = handlers.sendMessage(fc.args.recipient as string, fc.args.text as string);
                 if (fc.name === 'get_notifications') result = handlers.getNotifications();
-                sessionRef.current?.sendToolResponse({ functionResponses: [{ id: fc.id, name: fc.name, response: { result } }] });
+                
+                sessionPromise.then(s => s.sendToolResponse({
+                  functionResponses: [{ id: fc.id, name: fc.name, response: { result } }]
+                }));
               }
             }
 
@@ -153,7 +171,7 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
             }
           },
           onerror: (e) => {
-            setError(`Network error: ${((e as any)?.message || 'Check your internet connection')}`);
+            setError(`Connection lost: ${((e as any)?.message || 'Check your internet connection')}`);
             stopSession();
           },
           onclose: () => { setStatus('Disconnected'); setIsListening(false); }
@@ -168,7 +186,7 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
       });
       sessionRef.current = await sessionPromise;
     } catch (err: any) {
-      setError('Failed to access microphone or connect.');
+      setError('Failed to access microphone or connect. Please ensure microphone permissions are granted.');
       setStatus('Ready');
     }
   };

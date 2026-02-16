@@ -12,12 +12,12 @@ import {
   LogIn,
   UserPlus
 } from 'lucide-react';
-import { ModuleType, Task, Note, Message, AppNotification } from './types';
-import VoiceInteraction from './components/VoiceInteraction';
-import StudySupport from './components/StudySupport';
-import Communication from './components/Communication';
-import NotificationManager from './components/NotificationManager';
-import Multimedia from './components/Multimedia';
+import { ModuleType, Task, Note, Message, AppNotification } from './types.ts';
+import VoiceInteraction from './components/VoiceInteraction.tsx';
+import StudySupport from './components/StudySupport.tsx';
+import Communication from './components/Communication.tsx';
+import NotificationManager from './components/NotificationManager.tsx';
+import Multimedia from './components/Multimedia.tsx';
 
 const App: React.FC = () => {
   const [activeModule, setActiveModule] = useState<ModuleType>(ModuleType.VOICE);
@@ -73,7 +73,7 @@ const App: React.FC = () => {
   ];
 
   return (
-    <div className="flex h-screen overflow-hidden bg-slate-950 text-slate-100">
+    <div className="flex h-screen overflow-hidden bg-[#0f172a] text-slate-100">
       {/* Sidebar */}
       <aside className={`${isSidebarOpen ? 'w-64' : 'w-20'} flex flex-col transition-all duration-300 border-r border-slate-800 bg-slate-900/50 backdrop-blur-xl z-50`}>
         <div className="p-6 flex items-center gap-3">
@@ -82,7 +82,7 @@ const App: React.FC = () => {
         </div>
         <nav className="flex-1 px-3 space-y-2 mt-4">
           {modules.map((m) => (
-            <button key={m.id} onClick={() => setActiveModule(m.id)} className={`w-full flex items-center gap-4 px-4 py-3 rounded-xl transition-all duration-200 group ${activeModule === m.id ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'}`}>
+            <button key={m.id} onClick={() => setActiveModule(m.id as ModuleType)} className={`w-full flex items-center gap-4 px-4 py-3 rounded-xl transition-all duration-200 group ${activeModule === m.id ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'}`}>
               <m.icon size={22} className={activeModule === m.id ? 'animate-pulse' : ''} />
               {isSidebarOpen && <span className="font-medium">{m.label}</span>}
             </button>
