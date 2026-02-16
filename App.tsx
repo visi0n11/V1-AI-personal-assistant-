@@ -9,7 +9,10 @@ import {
   Settings, 
   User, 
   Home,
-  MessageSquare
+  MessageSquare,
+  LogOut,
+  LogIn,
+  UserPlus
 } from 'lucide-react';
 import { ModuleType } from './types';
 import VoiceInteraction from './components/VoiceInteraction';
@@ -21,6 +24,7 @@ import Multimedia from './components/Multimedia';
 const App: React.FC = () => {
   const [activeModule, setActiveModule] = useState<ModuleType>(ModuleType.VOICE);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
 
   const modules = [
     { id: ModuleType.VOICE, icon: Mic, label: 'Voice Assistant' },
@@ -29,6 +33,9 @@ const App: React.FC = () => {
     { id: ModuleType.NOTIFICATIONS, icon: Bell, label: 'Notifications' },
     { id: ModuleType.MULTIMEDIA, icon: ImageIcon, label: 'Multimedia' },
   ];
+
+  const handleLogin = () => setIsLoggedIn(true);
+  const handleLogout = () => setIsLoggedIn(false);
 
   return (
     <div className="flex h-screen overflow-hidden bg-slate-950 text-slate-100">
@@ -82,14 +89,48 @@ const App: React.FC = () => {
               Online
             </span>
           </div>
+
           <div className="flex items-center gap-4">
-            <div className="text-right hidden sm:block">
-              <div className="text-sm font-semibold">User Profile</div>
-              <div className="text-xs text-slate-400 italic">Advanced Plan</div>
-            </div>
-            <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-slate-700 to-slate-500 flex items-center justify-center border border-slate-600">
-              <User size={20} />
-            </div>
+            {isLoggedIn ? (
+              <div className="flex items-center gap-4">
+                <div className="text-right hidden sm:block">
+                  <div className="text-sm font-semibold">User Profile</div>
+                  <div className="text-xs text-slate-400 italic">Advanced Plan</div>
+                </div>
+                <div className="group relative">
+                  <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-slate-700 to-slate-500 flex items-center justify-center border border-slate-600 cursor-pointer hover:border-blue-500 transition-colors">
+                    <User size={20} />
+                  </div>
+                  {/* Mock Dropdown for Logout */}
+                  <div className="absolute right-0 top-12 w-48 bg-slate-900 border border-slate-800 rounded-xl shadow-2xl p-2 opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-50">
+                    <button 
+                      onClick={handleLogout}
+                      className="w-full flex items-center gap-3 px-3 py-2 text-sm text-red-400 hover:bg-red-400/10 rounded-lg transition-colors"
+                    >
+                      <LogOut size={16} />
+                      Log Out
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="flex items-center gap-3">
+                <button 
+                  onClick={handleLogin}
+                  className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-slate-300 hover:text-white border border-slate-700 hover:border-slate-500 rounded-xl transition-all"
+                >
+                  <LogIn size={16} />
+                  Log In
+                </button>
+                <button 
+                  onClick={handleLogin}
+                  className="flex items-center gap-2 px-4 py-2 text-sm font-bold text-white bg-blue-600 hover:bg-blue-500 rounded-xl shadow-lg shadow-blue-600/20 transition-all active:scale-95"
+                >
+                  <UserPlus size={16} />
+                  Register
+                </button>
+              </div>
+            )}
           </div>
         </header>
 

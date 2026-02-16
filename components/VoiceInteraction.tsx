@@ -1,40 +1,18 @@
 
-import React, { useState, useEffect, useRef } from 'react';
-import { Mic, MicOff, MessageCircle, AlertCircle, Key } from 'lucide-react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { Mic, MicOff, Volume2, MessageCircle, AlertCircle } from 'lucide-react';
 import { GoogleGenAI, LiveServerMessage, Modality, Blob } from '@google/genai';
 
 const VoiceInteraction: React.FC = () => {
   const [isListening, setIsListening] = useState(false);
   const [transcription, setTranscription] = useState<string[]>([]);
-  const [status, setStatus] = useState<string>('Ready');
+  const [status, setStatus] = useState<string>('Ready for interaction');
   const [error, setError] = useState<string | null>(null);
-  const [needsKey, setNeedsKey] = useState(false);
 
   const audioContextRef = useRef<AudioContext | null>(null);
-  const inputAudioContextRef = useRef<AudioContext | null>(null);
-  const streamRef = useRef<MediaStream | null>(null);
   const nextStartTimeRef = useRef(0);
   const sourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
   const sessionRef = useRef<any>(null);
-
-  useEffect(() => {
-    const checkKey = async () => {
-      // In AI Studio environment, we can check for selected keys
-      if (window.aistudio && typeof window.aistudio.hasSelectedApiKey === 'function') {
-        try {
-          const hasKey = await window.aistudio.hasSelectedApiKey();
-          setNeedsKey(!hasKey);
-        } catch (e) {
-          console.error("Error checking key selection:", e);
-        }
-      }
-    };
-    checkKey();
-    
-    return () => {
-      stopSession();
-    };
-  }, []);
 
   const decode = (base64: string) => {
     const binaryString = atob(base64);
@@ -75,24 +53,13 @@ const VoiceInteraction: React.FC = () => {
   const startSession = async () => {
     try {
       setError(null);
-      setStatus('Connecting...');
-
-      // Re-initialize AI to ensure it uses the most up-to-date API key
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
       
-      const AudioContextClass = (window.AudioContext || (window as any).webkitAudioContext);
-      const inputCtx = new AudioContextClass({ sampleRate: 16000 });
-      const outputCtx = new AudioContextClass({ sampleRate: 24000 });
-      
-      inputAudioContextRef.current = inputCtx;
-      audioContextRef.current = outputCtx;
-
-      // Ensure audio context is resumed (browser requirement)
-      if (inputCtx.state === 'suspended') await inputCtx.resume();
-      if (outputCtx.state === 'suspended') await outputCtx.resume();
+      const inputAudioContext = new AudioContext({ sampleRate: 16000 });
+      const outputAudioContext = new AudioContext({ sampleRate: 24000 });
+      audioContextRef.current = outputAudioContext;
 
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      streamRef.current = stream;
 
       const sessionPromise = ai.live.connect({
         model: 'gemini-2.5-flash-native-audio-preview-12-2025',
@@ -100,8 +67,8 @@ const VoiceInteraction: React.FC = () => {
           onopen: () => {
             setStatus('Active');
             setIsListening(true);
-            const source = inputCtx.createMediaStreamSource(stream);
-            const scriptProcessor = inputCtx.createScriptProcessor(4096, 1, 1);
+            const source = inputAudioContext.createMediaStreamSource(stream);
+            const scriptProcessor = inputAudioContext.createScriptProcessor(4096, 1, 1);
             
             scriptProcessor.onaudioprocess = (e) => {
               const inputData = e.inputBuffer.getChannelData(0);
@@ -114,23 +81,20 @@ const VoiceInteraction: React.FC = () => {
                 data: encode(new Uint8Array(int16.buffer)),
                 mimeType: 'audio/pcm;rate=16000',
               };
-              
-              sessionPromise.then(session => {
-                if (session) session.sendRealtimeInput({ media: pcmBlob });
-              }).catch(() => {});
+              sessionPromise.then(session => session.sendRealtimeInput({ media: pcmBlob }));
             };
 
             source.connect(scriptProcessor);
-            scriptProcessor.connect(inputCtx.destination);
+            scriptProcessor.connect(inputAudioContext.destination);
           },
           onmessage: async (message: LiveServerMessage) => {
-            const audioData = message.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
+            const audioData = message.serverContent?.modelTurn?.parts[0]?.inlineData?.data;
             if (audioData) {
-              nextStartTimeRef.current = Math.max(nextStartTimeRef.current, outputCtx.currentTime);
-              const buffer = await decodeAudioData(decode(audioData), outputCtx, 24000, 1);
-              const source = outputCtx.createBufferSource();
+              nextStartTimeRef.current = Math.max(nextStartTimeRef.current, outputAudioContext.currentTime);
+              const buffer = await decodeAudioData(decode(audioData), outputAudioContext, 24000, 1);
+              const source = outputAudioContext.createBufferSource();
               source.buffer = buffer;
-              source.connect(outputCtx.destination);
+              source.connect(outputAudioContext.destination);
               source.start(nextStartTimeRef.current);
               nextStartTimeRef.current += buffer.duration;
               sourcesRef.current.add(source);
@@ -138,26 +102,15 @@ const VoiceInteraction: React.FC = () => {
             }
 
             if (message.serverContent?.outputTranscription) {
-              setTranscription(prev => [...prev.slice(-19), `V1: ${message.serverContent?.outputTranscription?.text}`]);
+              setTranscription(prev => [...prev, `V1: ${message.serverContent?.outputTranscription?.text}`]);
             }
             if (message.serverContent?.inputTranscription) {
-              setTranscription(prev => [...prev.slice(-19), `You: ${message.serverContent?.inputTranscription?.text}`]);
-            }
-            if (message.serverContent?.interrupted) {
-              sourcesRef.current.forEach(s => { try { s.stop(); } catch(e) {} });
-              sourcesRef.current.clear();
-              nextStartTimeRef.current = 0;
+              setTranscription(prev => [...prev, `You: ${message.serverContent?.inputTranscription?.text}`]);
             }
           },
           onerror: (e) => {
             console.error('Session error:', e);
-            const msg = (e as any)?.message || 'Network error';
-            if (msg.includes('entity was not found') || msg.includes('API key')) {
-              setError('API Key error. Please ensure you have a valid paid API key selected.');
-              setNeedsKey(true);
-            } else {
-              setError(`Session error: ${msg}`);
-            }
+            setError('Connection error. Please check your microphone and API key.');
             stopSession();
           },
           onclose: () => {
@@ -167,7 +120,7 @@ const VoiceInteraction: React.FC = () => {
         },
         config: {
           responseModalities: [Modality.AUDIO],
-          systemInstruction: 'You are V1, a proactive and intelligent AI assistant. Be friendly, helpful, and concise. Always respond in a conversational tone.',
+          systemInstruction: 'You are V1, a proactive and intelligent AI assistant. Be friendly, helpful, and concise.',
           outputAudioTranscription: {},
           inputAudioTranscription: {},
         }
@@ -175,39 +128,17 @@ const VoiceInteraction: React.FC = () => {
 
       sessionRef.current = await sessionPromise;
     } catch (err: any) {
-      console.error("Start Session failed:", err);
-      setError('Failed to start session. Check your microphone permissions and network.');
-      setStatus('Ready');
+      console.error(err);
+      setError('Failed to start session. Ensure you have granted microphone access.');
     }
   };
 
   const stopSession = () => {
     if (sessionRef.current) {
-      try { sessionRef.current.close(); } catch (e) {}
-      sessionRef.current = null;
-    }
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach(track => track.stop());
-      streamRef.current = null;
-    }
-    if (inputAudioContextRef.current) {
-      inputAudioContextRef.current.close().catch(() => {});
-      inputAudioContextRef.current = null;
-    }
-    if (audioContextRef.current) {
-      audioContextRef.current.close().catch(() => {});
-      audioContextRef.current = null;
-    }
-    sourcesRef.current.forEach(s => { try { s.stop(); } catch (e) {} });
-    sourcesRef.current.clear();
-    setIsListening(false);
-    setStatus('Ready');
-  };
-
-  const handleOpenKey = async () => {
-    if (window.aistudio) {
-      await window.aistudio.openSelectKey();
-      setNeedsKey(false);
+      // In a real implementation we would close the session
+      // For now, let's just update the state
+      setIsListening(false);
+      setStatus('Ready for interaction');
     }
   };
 
@@ -217,16 +148,17 @@ const VoiceInteraction: React.FC = () => {
         <h1 className="text-4xl font-bold bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">
           V1 Voice Interaction
         </h1>
-        <p className="text-slate-400">Speak naturally with your real-time AI assistant.</p>
+        <p className="text-slate-400">Speak naturally with your personal AI assistant.</p>
       </div>
 
+      {/* Visualizer Orb */}
       <div className="relative flex items-center justify-center">
         <div className={`absolute w-64 h-64 rounded-full bg-blue-600/20 blur-3xl transition-all duration-1000 ${isListening ? 'scale-125 opacity-100' : 'scale-75 opacity-0'}`} />
         <div className={`relative w-48 h-48 rounded-full flex items-center justify-center transition-all duration-500 overflow-hidden shadow-2xl border ${isListening ? 'border-blue-500 scale-110 shadow-blue-500/30' : 'border-slate-800 shadow-slate-900/50'} bg-slate-900`}>
           {isListening ? (
             <div className="flex items-end gap-1.5 h-16">
               {[...Array(5)].map((_, i) => (
-                <div key={i} className="w-2 bg-blue-500 rounded-full animate-bounce" style={{ height: `${20 + Math.random() * 60}%`, animationDelay: `${i * 0.1}s` }} />
+                <div key={i} className="w-2 bg-blue-500 rounded-full animate-bounce" style={{ height: `${Math.random() * 100}%`, animationDelay: `${i * 0.1}s` }} />
               ))}
             </div>
           ) : (
@@ -236,23 +168,14 @@ const VoiceInteraction: React.FC = () => {
       </div>
 
       <div className="flex flex-col items-center gap-6 w-full">
-        <div className="flex flex-col gap-4 items-center">
-          {needsKey ? (
-            <button 
-              onClick={handleOpenKey}
-              className="flex items-center gap-2 px-8 py-4 bg-amber-600 hover:bg-amber-500 rounded-2xl font-bold shadow-lg shadow-amber-600/30 transition-all active:scale-95"
-            >
-              <Key size={20} />
-              Verify API Key
-            </button>
-          ) : !isListening ? (
+        <div className="flex gap-4">
+          {!isListening ? (
             <button 
               onClick={startSession}
-              disabled={status === 'Connecting...'}
-              className="flex items-center gap-2 px-8 py-4 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 rounded-2xl font-bold shadow-lg shadow-blue-600/30 transition-all active:scale-95"
+              className="flex items-center gap-2 px-8 py-4 bg-blue-600 hover:bg-blue-500 rounded-2xl font-bold shadow-lg shadow-blue-600/30 transition-all active:scale-95"
             >
               <Mic size={20} />
-              {status === 'Connecting...' ? 'Connecting...' : 'Start Conversation'}
+              Start Conversation
             </button>
           ) : (
             <button 
@@ -263,18 +186,17 @@ const VoiceInteraction: React.FC = () => {
               End Session
             </button>
           )}
-          <span className="text-xs text-slate-500 font-medium uppercase tracking-widest">{status}</span>
         </div>
 
         <div className="w-full glass-panel rounded-3xl p-6 min-h-[160px] max-h-[300px] overflow-y-auto flex flex-col gap-3 custom-scrollbar">
           {transcription.length === 0 ? (
-            <div className="flex flex-col items-center justify-center h-full text-slate-500 gap-2 italic text-sm">
+            <div className="flex flex-col items-center justify-center h-full text-slate-500 gap-2 italic">
               <MessageCircle size={24} />
               <p>{isListening ? "Listening for your voice..." : "Voice activity logs will appear here"}</p>
             </div>
           ) : (
             transcription.map((t, i) => (
-              <div key={i} className={`p-3 rounded-xl max-w-[85%] text-sm ${t.startsWith('You:') ? 'bg-slate-800 self-end text-right' : 'bg-blue-900/30 self-start text-left border border-blue-800/50'}`}>
+              <div key={i} className={`p-3 rounded-xl max-w-[85%] ${t.startsWith('You:') ? 'bg-slate-800 self-end text-right' : 'bg-blue-900/30 self-start text-left border border-blue-800/50'}`}>
                 {t}
               </div>
             ))
@@ -282,10 +204,9 @@ const VoiceInteraction: React.FC = () => {
         </div>
 
         {error && (
-          <div className="flex items-center gap-2 text-red-400 text-sm bg-red-400/10 p-4 rounded-2xl border border-red-400/20 w-full">
+          <div className="flex items-center gap-2 text-red-400 text-sm bg-red-400/10 p-3 rounded-xl border border-red-400/20">
             <AlertCircle size={16} />
-            <span className="flex-1">{error}</span>
-            <button onClick={() => setError(null)} className="text-xs hover:underline p-1">Dismiss</button>
+            {error}
           </div>
         )}
       </div>
