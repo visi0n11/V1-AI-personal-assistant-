@@ -1,0 +1,8 @@
+{
+  "name": "Copy of V1 – AI Personal Assistant",
+  "description": "A comprehensive AI companion featuring real-time voice interaction, study support, hands-free calling/messaging simulation, notification management, and multimedia control.",
+  "requestFramePermissions": [
+    "microphone",
+    "camera"
+  ]
+}
