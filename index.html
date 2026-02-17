@@ -5,18 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>V1 AI Personal Assistant</title>
     <script>
-      // Safer process injection for restricted environments
-      try {
-        if (typeof window.process === 'undefined') {
-          Object.defineProperty(window, 'process', {
-            value: { env: {} },
-            writable: true,
-            configurable: true
-          });
-        }
-      } catch (e) {
-        console.warn('Global process object could not be initialized:', e);
-      }
+      // Initialize process.env safely without overwriting platform-injected variables
+      window.process = window.process || {};
+      window.process.env = window.process.env || {};
     </script>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>

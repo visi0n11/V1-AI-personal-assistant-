@@ -1,6 +1,5 @@
-
 import React, { useState, useEffect, useRef } from 'react';
-import { Mic, MicOff, MessageCircle, AlertCircle, Sparkles, Zap, Activity } from 'lucide-react';
+import { Mic, MicOff, AlertCircle, Sparkles, Activity } from 'lucide-react';
 import { GoogleGenAI, LiveServerMessage, Modality, Blob, Type, FunctionDeclaration } from '@google/genai';
 
 interface VoiceInteractionProps {
@@ -26,38 +25,36 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
   const nextStartTimeRef = useRef(0);
   const sourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
   const sessionPromiseRef = useRef<Promise<any> | null>(null);
+  
   const currentInputTranscription = useRef('');
   const currentOutputTranscription = useRef('');
 
-  // Manual encode implementation as per guidelines
+  // Manual base64 utilities as required by Gemini Live rules
   function encode(bytes: Uint8Array) {
     let binary = '';
-    const len = bytes.byteLength;
-    for (let i = 0; i < len; i++) {
+    for (let i = 0; i < bytes.byteLength; i++) {
       binary += String.fromCharCode(bytes[i]);
     }
     return btoa(binary);
   }
 
-  // Manual decode implementation as per guidelines
   function decode(base64: string) {
     const binaryString = atob(base64);
-    const len = binaryString.length;
-    const bytes = new Uint8Array(len);
-    for (let i = 0; i < len; i++) {
+    const bytes = new Uint8Array(binaryString.length);
+    for (let i = 0; i < binaryString.length; i++) {
       bytes[i] = binaryString.charCodeAt(i);
     }
     return bytes;
   }
 
-  // Audio decoding logic for raw PCM streams as per guidelines
+  // Improved PCM decoding to handle data views correctly
   async function decodeAudioData(
     data: Uint8Array,
     ctx: AudioContext,
     sampleRate: number,
     numChannels: number,
   ): Promise<AudioBuffer> {
-    const dataInt16 = new Int16Array(data.buffer);
+    const dataInt16 = new Int16Array(data.buffer, data.byteOffset, data.byteLength / 2);
     const frameCount = dataInt16.length / numChannels;
     const buffer = ctx.createBuffer(numChannels, frameCount, sampleRate);
 
@@ -110,7 +107,7 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
 
   const stopSession = () => {
     if (sessionPromiseRef.current) {
-      sessionPromiseRef.current.then(session => session.close()).catch(() => {});
+      sessionPromiseRef.current.then(s => s.close()).catch(() => {});
       sessionPromiseRef.current = null;
     }
     if (streamRef.current) {
@@ -125,10 +122,9 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
       audioContextRef.current.close().catch(() => {});
       audioContextRef.current = null;
     }
-    sourcesRef.current.forEach(source => {
-      try { source.stop(); } catch (e) {}
-    });
+    sourcesRef.current.forEach(s => { try { s.stop(); } catch(e){} });
     sourcesRef.current.clear();
+    
     setIsListening(false);
     setStatus('System Ready');
     setInputLevel(0);
@@ -138,10 +134,13 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
   const startSession = async () => {
     try {
       setError(null);
-      setStatus('Synchronizing...');
+      setStatus('Requesting Hardware...');
       
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-      
+      const apiKey = process.env.API_KEY;
+      if (!apiKey) {
+        throw new Error("API Key is not configured. Please check your environment settings.");
+      }
+
       const AudioContextClass = (window.AudioContext || (window as any).webkitAudioContext);
       const inputCtx = new AudioContextClass({ sampleRate: 16000 });
       const outputCtx = new AudioContextClass({ sampleRate: 24000 });
@@ -155,17 +154,21 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
 
+      const ai = new GoogleGenAI({ apiKey });
       const sessionPromise = ai.live.connect({
         model: 'gemini-2.5-flash-native-audio-preview-12-2025',
         callbacks: {
           onopen: () => {
-            setStatus('V1 Online');
+            setStatus('Neural Link Established');
             setIsListening(true);
+            
             const source = inputCtx.createMediaStreamSource(stream);
             const scriptProcessor = inputCtx.createScriptProcessor(4096, 1, 1);
             
             scriptProcessor.onaudioprocess = (e) => {
               const inputData = e.inputBuffer.getChannelData(0);
+              
+              // Calculate real-time level for UI feedback
               let sum = 0;
               for (let i = 0; i < inputData.length; i++) sum += Math.abs(inputData[i]);
               setInputLevel(sum / inputData.length);
@@ -178,7 +181,6 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
                 mimeType: 'audio/pcm;rate=16000' 
               };
               
-              // CRITICAL: initiate sendRealtimeInput only after session resolves to avoid race conditions
               sessionPromise.then(s => s.sendRealtimeInput({ media: pcmBlob })).catch(() => {});
             };
             
@@ -186,25 +188,8 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
             scriptProcessor.connect(inputCtx.destination);
           },
           onmessage: async (message: LiveServerMessage) => {
-            // Process transcription for both user and AI
-            if (message.serverContent?.outputTranscription) {
-              currentOutputTranscription.current += message.serverContent.outputTranscription.text;
-            } else if (message.serverContent?.inputTranscription) {
-              currentInputTranscription.current += message.serverContent.inputTranscription.text;
-            }
-
-            if (message.serverContent?.turnComplete) {
-              const uText = currentInputTranscription.current.trim();
-              const aText = currentOutputTranscription.current.trim();
-              if (uText || aText) {
-                setTranscription(prev => [...prev, uText ? `User: ${uText}` : '', aText ? `AI: ${aText}` : ''].filter(Boolean));
-              }
-              currentInputTranscription.current = '';
-              currentOutputTranscription.current = '';
-            }
-
-            // Process model's audio output bytes
-            const base64Audio = message.serverContent?.modelTurn?.parts[0]?.inlineData?.data;
+            // Audio output processing
+            const base64Audio = message.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
             if (base64Audio && audioContextRef.current) {
               const ctx = audioContextRef.current;
               nextStartTimeRef.current = Math.max(nextStartTimeRef.current, ctx.currentTime);
@@ -218,42 +203,52 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
               sourcesRef.current.add(source);
             }
 
-            // Handle session interruption (e.g., user speaking over the model)
+            // Transcription processing
+            if (message.serverContent?.outputTranscription) {
+              currentOutputTranscription.current += message.serverContent.outputTranscription.text;
+            } else if (message.serverContent?.inputTranscription) {
+              currentInputTranscription.current += message.serverContent.inputTranscription.text;
+            }
+
+            if (message.serverContent?.turnComplete) {
+              const userText = currentInputTranscription.current.trim();
+              const aiText = currentOutputTranscription.current.trim();
+              if (userText || aiText) {
+                setTranscription(prev => [...prev.slice(-10), userText ? `You: ${userText}` : '', aiText ? `V1: ${aiText}` : ''].filter(Boolean));
+              }
+              currentInputTranscription.current = '';
+              currentOutputTranscription.current = '';
+            }
+
+            // Interruption logic
             if (message.serverContent?.interrupted) {
-              sourcesRef.current.forEach(s => {
-                try { s.stop(); } catch (e) {}
-              });
+              sourcesRef.current.forEach(s => { try { s.stop(); } catch(e){} });
               sourcesRef.current.clear();
               nextStartTimeRef.current = 0;
             }
 
-            // Handle model-requested function calls
+            // Function calling
             if (message.toolCall) {
               for (const fc of message.toolCall.functionCalls) {
-                let result: any = "ok";
+                let response: any = "Success";
                 try {
-                  if (fc.name === 'add_note') result = handlers.addNote(fc.args.title as string, fc.args.content as string);
-                  if (fc.name === 'add_task') result = handlers.addTask(fc.args.text as string);
-                  if (fc.name === 'send_message') result = handlers.sendMessage(fc.args.recipient as string, fc.args.text as string);
-                  if (fc.name === 'control_multimedia') result = handlers.controlMedia(fc.args.action as string);
-                  if (fc.name === 'get_notifications') result = handlers.getNotifications();
+                  if (fc.name === 'add_note') response = handlers.addNote(fc.args.title as string, fc.args.content as string);
+                  if (fc.name === 'add_task') response = handlers.addTask(fc.args.text as string);
+                  if (fc.name === 'send_message') response = handlers.sendMessage(fc.args.recipient as string, fc.args.text as string);
+                  if (fc.name === 'control_multimedia') response = handlers.controlMedia(fc.args.action as string);
+                  if (fc.name === 'get_notifications') response = handlers.getNotifications();
                 } catch (e) {
-                  result = { error: (e as Error).message };
+                  response = { error: (e as Error).message };
                 }
-                
                 sessionPromise.then(s => s.sendToolResponse({
-                  functionResponses: {
-                    id: fc.id,
-                    name: fc.name,
-                    response: { result }
-                  }
+                  functionResponses: [{ id: fc.id, name: fc.name, response: { result: response } }]
                 }));
               }
             }
           },
           onerror: (e) => {
-            console.error('Gemini Live API Error:', e);
-            setError('System error. Please verify configuration.');
+            console.error('Gemini Session Error:', e);
+            setError('Connection lost. Please re-activate.');
             stopSession();
           },
           onclose: () => {
@@ -265,90 +260,118 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
           responseModalities: [Modality.AUDIO],
           speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Zephyr' } } },
           tools: [{ functionDeclarations: tools }],
-          systemInstruction: "You are V1, a high-performance personal assistant. You help with study tasks, notifications, and multimedia. Use tools when needed. Be concise and professional.",
+          systemInstruction: "You are V1, a professional AI personal assistant. Assist with study, multimedia, and communication tasks. Be concise, fast, and polite.",
           inputAudioTranscription: {},
           outputAudioTranscription: {}
         }
       });
       sessionPromiseRef.current = sessionPromise;
-    } catch (err) {
-      setError((err as Error).message);
+    } catch (err: any) {
+      console.error('Initialization Error:', err);
+      setError(err.message || 'Microphone access failed.');
       setStatus('System Ready');
     }
   };
 
   useEffect(() => {
-    return () => {
-      stopSession();
-    };
+    return () => stopSession();
   }, []);
 
   return (
-    <div className="h-full flex flex-col items-center justify-center p-4">
-      <div className="w-full max-w-2xl bg-slate-900/50 backdrop-blur-xl border border-slate-800 rounded-[3rem] p-8 shadow-2xl relative overflow-hidden group">
-        <div className="absolute inset-0 bg-blue-500/5 opacity-0 group-hover:opacity-100 transition-opacity" />
-        
-        {/* Connection Status Display */}
-        <div className="flex items-center justify-between mb-12">
-          <div className="flex items-center gap-3">
-            <div className={`w-3 h-3 rounded-full ${isListening ? 'bg-emerald-500 animate-pulse' : 'bg-slate-700'}`} />
-            <span className="text-sm font-bold tracking-widest text-slate-400 uppercase">{status}</span>
-          </div>
-          <div className="flex gap-1">
-            {[...Array(5)].map((_, i) => (
-              <div 
-                key={i} 
-                className="w-1 bg-blue-500 rounded-full transition-all duration-75" 
-                style={{ height: isListening ? `${Math.max(4, inputLevel * 300 * (Math.random() + 0.5))}px` : '4px' }}
-              />
-            ))}
+    <div className="flex flex-col items-center justify-center h-full max-w-2xl mx-auto px-4 gap-8">
+      {/* Visual Identity Section */}
+      <div className="text-center space-y-4 animate-in fade-in zoom-in duration-500">
+        <div className="flex justify-center mb-6">
+          <div className="relative group">
+            <div className={`absolute -inset-4 rounded-full bg-blue-500/20 blur-xl transition-all duration-1000 ${isListening ? 'opacity-100 scale-125' : 'opacity-0'}`} />
+            <div className="relative p-6 bg-slate-900 border border-slate-800 rounded-full shadow-2xl">
+              <Sparkles size={40} className={`${isListening ? 'text-blue-400 animate-pulse' : 'text-slate-600'}`} />
+            </div>
           </div>
         </div>
+        <h1 className="text-5xl font-black italic tracking-tighter bg-gradient-to-br from-white to-slate-500 bg-clip-text text-transparent uppercase">V1 Interface</h1>
+        <p className="text-slate-500 font-bold text-[10px] tracking-[0.4em] uppercase">Advanced Neural System Enabled</p>
+      </div>
 
-        {/* Primary Interaction Button */}
-        <div className="flex flex-col items-center gap-8 py-12">
-          <button 
-            onClick={isListening ? stopSession : startSession}
-            className={`relative w-32 h-32 rounded-full flex items-center justify-center transition-all duration-500 shadow-2xl ${isListening ? 'bg-red-500 shadow-red-500/40 scale-110' : 'bg-blue-600 shadow-blue-600/40 hover:scale-105'}`}
-          >
-            {isListening ? (
-              <div className="relative">
-                <MicOff size={48} className="text-white" />
-                <div className="absolute inset-0 bg-white/20 rounded-full animate-ping -z-10" />
-              </div>
-            ) : (
-              <Mic size={48} className="text-white" />
-            )}
-          </button>
+      {/* Main Activation Ring */}
+      <div className="relative flex flex-col items-center">
+        <button 
+          onClick={isListening ? stopSession : startSession}
+          className={`relative w-64 h-64 rounded-full flex flex-col items-center justify-center transition-all duration-700 group ${isListening ? 'bg-blue-900/20 border-2 border-blue-400 shadow-[0_0_80px_rgba(59,130,246,0.3)]' : 'bg-slate-900 border-2 border-slate-800 hover:border-slate-600 shadow-xl'}`}
+        >
+          {isListening ? (
+            <div className="flex gap-1.5 h-16 items-center">
+              {[...Array(12)].map((_, i) => (
+                <div 
+                  key={i} 
+                  className="w-1.5 bg-blue-400 rounded-full animate-bounce" 
+                  style={{ 
+                    height: `${20 + Math.random() * 80}%`, 
+                    animationDelay: `${i * 0.05}s`,
+                    opacity: 0.5 + (inputLevel * 10)
+                  }} 
+                />
+              ))}
+            </div>
+          ) : (
+            <Mic size={72} className="text-slate-700 group-hover:text-blue-500 transition-colors transform group-hover:scale-110 duration-500" />
+          )}
           
-          <div className="text-center space-y-2">
-            <h3 className="text-2xl font-black tracking-tight uppercase">{isListening ? 'Assistant Active' : 'Activate Voice'}</h3>
-            <p className="text-slate-500 font-medium max-w-xs mx-auto">"Read my notifications" or "Play some music"</p>
+          <div className="absolute bottom-12">
+            <span className={`text-[10px] font-black uppercase tracking-[0.4em] ${isListening ? 'text-blue-400 animate-pulse' : 'text-slate-600'}`}>
+              {isListening ? 'Neural Active' : 'Start Feed'}
+            </span>
           </div>
-        </div>
+        </button>
 
-        {/* Dynamic Error Messaging */}
-        {error && (
-          <div className="mt-4 p-4 bg-red-500/10 border border-red-500/20 rounded-2xl flex items-center gap-3 text-red-400 text-sm font-bold">
-            <AlertCircle size={20} />
-            {error}
+        {/* Real-time Level Meter */}
+        {isListening && (
+          <div className="mt-8 w-48 h-1 bg-slate-900 rounded-full overflow-hidden border border-slate-800 shadow-lg">
+             <div 
+               className="h-full bg-blue-500 transition-all duration-75 shadow-[0_0_10px_rgba(59,130,246,0.5)]" 
+               style={{ width: `${Math.min(inputLevel * 1500, 100)}%` }} 
+             />
           </div>
         )}
+      </div>
 
-        {/* Live Conversation Logs */}
-        <div className="mt-8 border-t border-slate-800 pt-8 max-h-48 overflow-y-auto custom-scrollbar space-y-4">
-          {transcription.map((text, i) => (
-            <div key={i} className={`flex items-start gap-3 text-sm font-medium ${text.startsWith('User') ? 'text-slate-400' : 'text-blue-400'}`}>
-              {text.startsWith('User') ? <Activity size={16} className="mt-0.5" /> : <Sparkles size={16} className="mt-0.5" />}
-              <span>{text.split(': ')[1]}</span>
-            </div>
-          ))}
-          {transcription.length === 0 && (
-            <div className="text-center text-slate-600 text-xs font-bold uppercase tracking-widest py-4">
-              Real-time Logs
-            </div>
-          )}
+      {/* Interaction Log */}
+      <div className="w-full space-y-4">
+        <div className="flex justify-center">
+          <div className="flex items-center gap-2 px-6 py-2 rounded-full bg-slate-900/80 border border-slate-800 text-[10px] font-bold text-slate-400 uppercase tracking-widest backdrop-blur-md">
+             <div className={`w-2 h-2 rounded-full ${isListening ? 'bg-emerald-400 animate-ping' : 'bg-slate-700'}`} />
+             {status}
+          </div>
         </div>
+
+        <div className="glass-panel rounded-[2.5rem] p-8 min-h-[160px] max-h-[300px] overflow-y-auto custom-scrollbar border-white/5 flex flex-col gap-4 shadow-inner">
+          {transcription.length === 0 ? (
+            <div className="flex flex-col items-center justify-center h-full text-slate-700 gap-4 opacity-40">
+              <Activity size={32} />
+              <p className="text-[10px] font-black italic tracking-widest uppercase">Encryption Tunnel Active</p>
+            </div>
+          ) : transcription.map((t, i) => {
+            const isUser = t.startsWith('You:');
+            return (
+              <div key={i} className={`flex ${isUser ? 'justify-end' : 'justify-start'} animate-in slide-in-from-bottom-2 duration-300`}>
+                <div className={`px-5 py-3 rounded-3xl text-sm font-medium max-w-[85%] leading-relaxed ${isUser ? 'bg-slate-800 text-slate-300 border border-slate-700' : 'bg-blue-600/10 text-blue-200 border border-blue-500/20 shadow-[0_0_30px_rgba(59,130,246,0.05)]'}`}>
+                  {t.split(': ')[1]}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {error && (
+          <div className="flex items-start gap-4 p-5 bg-red-500/10 border border-red-500/20 rounded-3xl animate-in fade-in slide-in-from-top-4">
+            <AlertCircle className="text-red-500 shrink-0 mt-0.5" size={20} />
+            <div className="space-y-1">
+              <p className="text-red-400 text-xs font-black uppercase tracking-tight">System Exception</p>
+              <p className="text-red-200/70 text-sm font-medium">{error}</p>
+            </div>
+            <button onClick={() => setError(null)} className="ml-auto text-red-400 text-[10px] font-black uppercase border-b border-red-500/30">Dismiss</button>
+          </div>
+        )}
       </div>
     </div>
   );
