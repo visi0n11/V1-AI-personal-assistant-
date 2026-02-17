@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useRef } from 'react';
 import { Mic, MicOff, MessageCircle, AlertCircle, Sparkles, Zap, Activity } from 'lucide-react';
 import { GoogleGenAI, LiveServerMessage, Modality, Blob, Type, FunctionDeclaration } from '@google/genai';
@@ -24,32 +25,50 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
   const streamRef = useRef<MediaStream | null>(null);
   const nextStartTimeRef = useRef(0);
   const sourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
-  const sessionRef = useRef<any>(null);
+  const sessionPromiseRef = useRef<Promise<any> | null>(null);
+  const currentInputTranscription = useRef('');
+  const currentOutputTranscription = useRef('');
 
-  const encode = (bytes: Uint8Array) => {
+  // Manual encode implementation as per guidelines
+  function encode(bytes: Uint8Array) {
     let binary = '';
-    for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
+    const len = bytes.byteLength;
+    for (let i = 0; i < len; i++) {
+      binary += String.fromCharCode(bytes[i]);
+    }
     return btoa(binary);
-  };
+  }
 
-  const decode = (base64: string) => {
+  // Manual decode implementation as per guidelines
+  function decode(base64: string) {
     const binaryString = atob(base64);
-    const bytes = new Uint8Array(binaryString.length);
-    for (let i = 0; i < binaryString.length; i++) bytes[i] = binaryString.charCodeAt(i);
+    const len = binaryString.length;
+    const bytes = new Uint8Array(len);
+    for (let i = 0; i < len; i++) {
+      bytes[i] = binaryString.charCodeAt(i);
+    }
     return bytes;
-  };
+  }
 
-  const decodeAudioData = async (data: Uint8Array, ctx: AudioContext, sampleRate: number, numChannels: number): Promise<AudioBuffer> => {
-    // Correctly handle buffer offset for PCM data
-    const dataInt16 = new Int16Array(data.buffer, data.byteOffset, data.byteLength / 2);
+  // Audio decoding logic for raw PCM streams as per guidelines
+  async function decodeAudioData(
+    data: Uint8Array,
+    ctx: AudioContext,
+    sampleRate: number,
+    numChannels: number,
+  ): Promise<AudioBuffer> {
+    const dataInt16 = new Int16Array(data.buffer);
     const frameCount = dataInt16.length / numChannels;
     const buffer = ctx.createBuffer(numChannels, frameCount, sampleRate);
+
     for (let channel = 0; channel < numChannels; channel++) {
       const channelData = buffer.getChannelData(channel);
-      for (let i = 0; i < frameCount; i++) channelData[i] = dataInt16[i * numChannels + channel] / 32768.0;
+      for (let i = 0; i < frameCount; i++) {
+        channelData[i] = dataInt16[i * numChannels + channel] / 32768.0;
+      }
     }
     return buffer;
-  };
+  }
 
   const tools: FunctionDeclaration[] = [
     {
@@ -89,19 +108,44 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
     { name: 'get_notifications', parameters: { type: Type.OBJECT, properties: {} } }
   ];
 
+  const stopSession = () => {
+    if (sessionPromiseRef.current) {
+      sessionPromiseRef.current.then(session => session.close()).catch(() => {});
+      sessionPromiseRef.current = null;
+    }
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => track.stop());
+      streamRef.current = null;
+    }
+    if (inputAudioContextRef.current) {
+      inputAudioContextRef.current.close().catch(() => {});
+      inputAudioContextRef.current = null;
+    }
+    if (audioContextRef.current) {
+      audioContextRef.current.close().catch(() => {});
+      audioContextRef.current = null;
+    }
+    sourcesRef.current.forEach(source => {
+      try { source.stop(); } catch (e) {}
+    });
+    sourcesRef.current.clear();
+    setIsListening(false);
+    setStatus('System Ready');
+    setInputLevel(0);
+    nextStartTimeRef.current = 0;
+  };
+
   const startSession = async () => {
     try {
       setError(null);
-      setStatus('Connecting to V1 Neural Network...');
+      setStatus('Synchronizing...');
       
-      // Initialize AI Core - Relying on process.env.API_KEY injection
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
+      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       
       const AudioContextClass = (window.AudioContext || (window as any).webkitAudioContext);
       const inputCtx = new AudioContextClass({ sampleRate: 16000 });
       const outputCtx = new AudioContextClass({ sampleRate: 24000 });
       
-      // Strict Browser Policy: Resume contexts
       await inputCtx.resume();
       await outputCtx.resume();
       
@@ -122,8 +166,6 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
             
             scriptProcessor.onaudioprocess = (e) => {
               const inputData = e.inputBuffer.getChannelData(0);
-              
-              // Local Monitor logic
               let sum = 0;
               for (let i = 0; i < inputData.length; i++) sum += Math.abs(inputData[i]);
               setInputLevel(sum / inputData.length);
@@ -132,10 +174,11 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
               for (let i = 0; i < inputData.length; i++) int16[i] = inputData[i] * 32768;
               
               const pcmBlob: Blob = { 
-                data: encode(new Uint8Array(int16.buffer, int16.byteOffset, int16.byteLength)), 
+                data: encode(new Uint8Array(int16.buffer)), 
                 mimeType: 'audio/pcm;rate=16000' 
               };
               
+              // CRITICAL: initiate sendRealtimeInput only after session resolves to avoid race conditions
               sessionPromise.then(s => s.sendRealtimeInput({ media: pcmBlob })).catch(() => {});
             };
             
@@ -143,9 +186,51 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
             scriptProcessor.connect(inputCtx.destination);
           },
           onmessage: async (message: LiveServerMessage) => {
+            // Process transcription for both user and AI
+            if (message.serverContent?.outputTranscription) {
+              currentOutputTranscription.current += message.serverContent.outputTranscription.text;
+            } else if (message.serverContent?.inputTranscription) {
+              currentInputTranscription.current += message.serverContent.inputTranscription.text;
+            }
+
+            if (message.serverContent?.turnComplete) {
+              const uText = currentInputTranscription.current.trim();
+              const aText = currentOutputTranscription.current.trim();
+              if (uText || aText) {
+                setTranscription(prev => [...prev, uText ? `User: ${uText}` : '', aText ? `AI: ${aText}` : ''].filter(Boolean));
+              }
+              currentInputTranscription.current = '';
+              currentOutputTranscription.current = '';
+            }
+
+            // Process model's audio output bytes
+            const base64Audio = message.serverContent?.modelTurn?.parts[0]?.inlineData?.data;
+            if (base64Audio && audioContextRef.current) {
+              const ctx = audioContextRef.current;
+              nextStartTimeRef.current = Math.max(nextStartTimeRef.current, ctx.currentTime);
+              const audioBuffer = await decodeAudioData(decode(base64Audio), ctx, 24000, 1);
+              const source = ctx.createBufferSource();
+              source.buffer = audioBuffer;
+              source.connect(ctx.destination);
+              source.onended = () => sourcesRef.current.delete(source);
+              source.start(nextStartTimeRef.current);
+              nextStartTimeRef.current += audioBuffer.duration;
+              sourcesRef.current.add(source);
+            }
+
+            // Handle session interruption (e.g., user speaking over the model)
+            if (message.serverContent?.interrupted) {
+              sourcesRef.current.forEach(s => {
+                try { s.stop(); } catch (e) {}
+              });
+              sourcesRef.current.clear();
+              nextStartTimeRef.current = 0;
+            }
+
+            // Handle model-requested function calls
             if (message.toolCall) {
               for (const fc of message.toolCall.functionCalls) {
-                let result = "Done.";
+                let result: any = "ok";
                 try {
                   if (fc.name === 'add_note') result = handlers.addNote(fc.args.title as string, fc.args.content as string);
                   if (fc.name === 'add_task') result = handlers.addTask(fc.args.text as string);
@@ -153,159 +238,117 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
                   if (fc.name === 'control_multimedia') result = handlers.controlMedia(fc.args.action as string);
                   if (fc.name === 'get_notifications') result = handlers.getNotifications();
                 } catch (e) {
-                  result = "System error during tool execution.";
+                  result = { error: (e as Error).message };
                 }
                 
                 sessionPromise.then(s => s.sendToolResponse({
-                  functionResponses: [{ id: fc.id, name: fc.name, response: { result } }]
+                  functionResponses: {
+                    id: fc.id,
+                    name: fc.name,
+                    response: { result }
+                  }
                 }));
               }
             }
-
-            const audioData = message.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
-            if (audioData) {
-              nextStartTimeRef.current = Math.max(nextStartTimeRef.current, outputCtx.currentTime);
-              const buffer = await decodeAudioData(decode(audioData), outputCtx, 24000, 1);
-              const source = outputCtx.createBufferSource();
-              source.buffer = buffer;
-              source.connect(outputCtx.destination);
-              source.start(nextStartTimeRef.current);
-              nextStartTimeRef.current += buffer.duration;
-              sourcesRef.current.add(source);
-              source.onended = () => sourcesRef.current.delete(source);
-            }
-
-            if (message.serverContent?.outputTranscription) {
-              setTranscription(prev => [...prev.slice(-6), `V1: ${message.serverContent?.outputTranscription?.text}`]);
-            }
-            if (message.serverContent?.inputTranscription) {
-              setTranscription(prev => [...prev.slice(-6), `You: ${message.serverContent?.inputTranscription?.text}`]);
-            }
-            if (message.serverContent?.interrupted) {
-               sourcesRef.current.forEach(s => { try { s.stop(); } catch(e) {} });
-               sourcesRef.current.clear();
-               nextStartTimeRef.current = 0;
-            }
           },
-          onerror: (e) => { 
-            console.error("Session Error:", e);
-            setError(`Neural link failed. Ensure your API key is correct.`); 
-            stopSession(); 
+          onerror: (e) => {
+            console.error('Gemini Live API Error:', e);
+            setError('System error. Please verify configuration.');
+            stopSession();
           },
-          onclose: () => { 
-            setStatus('Ready'); 
-            setIsListening(false); 
+          onclose: () => {
+            setIsListening(false);
+            setStatus('System Ready');
           }
         },
         config: {
           responseModalities: [Modality.AUDIO],
-          systemInstruction: 'You are V1, a high-performance personal assistant. Be efficient. Use tools to manage users life. Be professional but friendly.',
+          speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Zephyr' } } },
           tools: [{ functionDeclarations: tools }],
-          outputAudioTranscription: {},
+          systemInstruction: "You are V1, a high-performance personal assistant. You help with study tasks, notifications, and multimedia. Use tools when needed. Be concise and professional.",
           inputAudioTranscription: {},
+          outputAudioTranscription: {}
         }
       });
-      sessionRef.current = await sessionPromise;
-    } catch (err: any) {
-      console.error("Start Error:", err);
-      setError(`Hardware error: ${err.message || 'Microphone access denied'}.`);
-      setStatus('Ready');
+      sessionPromiseRef.current = sessionPromise;
+    } catch (err) {
+      setError((err as Error).message);
+      setStatus('System Ready');
     }
   };
 
-  const stopSession = () => {
-    if (sessionRef.current) { try { sessionRef.current.close(); } catch(e){} sessionRef.current = null; }
-    if (streamRef.current) { streamRef.current.getTracks().forEach(t => t.stop()); streamRef.current = null; }
-    if (inputAudioContextRef.current) { inputAudioContextRef.current.close().catch(()=>{}); inputAudioContextRef.current = null; }
-    if (audioContextRef.current) { audioContextRef.current.close().catch(()=>{}); audioContextRef.current = null; }
-    sourcesRef.current.forEach(s => { try { s.stop(); } catch(e) {} });
-    sourcesRef.current.clear();
-    setIsListening(false);
-    setStatus('Ready');
-    setInputLevel(0);
-  };
+  useEffect(() => {
+    return () => {
+      stopSession();
+    };
+  }, []);
 
   return (
-    <div className="flex flex-col h-full gap-8 items-center justify-center max-w-2xl mx-auto px-4">
-      <div className="text-center space-y-4">
-        <div className="flex justify-center mb-4">
-          <div className="p-4 bg-blue-600/10 rounded-3xl border border-blue-500/20 shadow-2xl shadow-blue-500/10">
-            <Activity size={32} className={`${isListening ? 'text-blue-400 animate-pulse' : 'text-slate-600'}`} />
-          </div>
-        </div>
-        <h1 className="text-4xl md:text-5xl font-black tracking-tighter bg-gradient-to-r from-white via-blue-100 to-blue-400 bg-clip-text text-transparent italic uppercase">V1 Interface</h1>
-        <p className="text-slate-500 font-bold text-[10px] tracking-[0.3em] uppercase">V2.5 Neural Engine Linked</p>
-      </div>
-
-      <div className="relative flex flex-col items-center">
-        <div className={`absolute -inset-16 rounded-full bg-blue-500/5 blur-[80px] transition-all duration-1000 ${isListening ? 'opacity-100 scale-125' : 'opacity-0 scale-50'}`} />
+    <div className="h-full flex flex-col items-center justify-center p-4">
+      <div className="w-full max-w-2xl bg-slate-900/50 backdrop-blur-xl border border-slate-800 rounded-[3rem] p-8 shadow-2xl relative overflow-hidden group">
+        <div className="absolute inset-0 bg-blue-500/5 opacity-0 group-hover:opacity-100 transition-opacity" />
         
-        <button 
-          onClick={isListening ? stopSession : startSession}
-          className={`relative w-64 h-64 rounded-full flex flex-col items-center justify-center transition-all duration-500 border-2 ${isListening ? 'border-blue-400 bg-blue-950/40 shadow-[0_0_100px_rgba(59,130,246,0.2)]' : 'border-slate-800 bg-slate-900/60 hover:border-slate-600'} active:scale-95 group overflow-hidden`}
-        >
-          {isListening ? (
-            <div className="flex items-center gap-1.5 h-12">
-              {[...Array(12)].map((_, i) => (
-                <div key={i} className="w-1 bg-blue-400 rounded-full animate-bounce" style={{ height: `${20 + Math.random() * 80}%`, animationDelay: `${i * 0.08}s` }} />
-              ))}
-            </div>
-          ) : (
-            <Mic size={72} className="text-slate-600 group-hover:text-blue-400 transition-all duration-300 transform group-hover:scale-110" />
-          )}
-          <div className="absolute bottom-10">
-            <span className={`text-[10px] font-black uppercase tracking-[0.4em] ${isListening ? 'text-blue-400 animate-pulse' : 'text-slate-600'}`}>
-              {isListening ? 'Neural Feed Active' : 'Engage V1'}
-            </span>
+        {/* Connection Status Display */}
+        <div className="flex items-center justify-between mb-12">
+          <div className="flex items-center gap-3">
+            <div className={`w-3 h-3 rounded-full ${isListening ? 'bg-emerald-500 animate-pulse' : 'bg-slate-700'}`} />
+            <span className="text-sm font-bold tracking-widest text-slate-400 uppercase">{status}</span>
           </div>
-        </button>
-
-        {isListening && (
-          <div className="mt-8 w-48 h-1 bg-slate-900 rounded-full overflow-hidden border border-slate-800 shadow-lg">
-             <div 
-               className="h-full bg-blue-500 transition-all duration-75 shadow-[0_0_10px_rgba(59,130,246,0.5)]" 
-               style={{ width: `${Math.min(inputLevel * 1000, 100)}%` }} 
-             />
-          </div>
-        )}
-      </div>
-
-      <div className="w-full space-y-6">
-        <div className="flex justify-center">
-          <div className="flex items-center gap-2 px-5 py-2 rounded-full bg-slate-900/60 border border-slate-800 text-[10px] font-bold text-slate-400 uppercase tracking-widest backdrop-blur-sm">
-             <div className={`w-1.5 h-1.5 rounded-full ${isListening ? 'bg-emerald-400 animate-ping shadow-[0_0_8px_rgba(52,211,153,0.5)]' : 'bg-slate-700'}`} />
-             {status}
+          <div className="flex gap-1">
+            {[...Array(5)].map((_, i) => (
+              <div 
+                key={i} 
+                className="w-1 bg-blue-500 rounded-full transition-all duration-75" 
+                style={{ height: isListening ? `${Math.max(4, inputLevel * 300 * (Math.random() + 0.5))}px` : '4px' }}
+              />
+            ))}
           </div>
         </div>
 
-        <div className="glass-panel rounded-[2.5rem] p-6 min-h-[160px] max-h-[280px] overflow-y-auto flex flex-col gap-4 custom-scrollbar border-white/5 shadow-inner">
-          {transcription.length === 0 ? (
-            <div className="flex flex-col items-center justify-center h-full text-slate-700 gap-4 opacity-50">
-              <Sparkles size={28} />
-              <p className="text-xs font-black italic tracking-widest uppercase">Encryption Established</p>
-            </div>
-          ) : transcription.map((t, i) => {
-            const isUser = t.startsWith('You:');
-            return (
-              <div key={i} className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
-                <div className={`px-5 py-3 rounded-2xl text-sm font-medium max-w-[85%] leading-relaxed ${isUser ? 'bg-slate-800 text-slate-200 border border-slate-700 shadow-lg' : 'bg-blue-600/10 text-blue-100 border border-blue-500/20'}`}>
-                  {t.split(': ')[1]}
-                </div>
+        {/* Primary Interaction Button */}
+        <div className="flex flex-col items-center gap-8 py-12">
+          <button 
+            onClick={isListening ? stopSession : startSession}
+            className={`relative w-32 h-32 rounded-full flex items-center justify-center transition-all duration-500 shadow-2xl ${isListening ? 'bg-red-500 shadow-red-500/40 scale-110' : 'bg-blue-600 shadow-blue-600/40 hover:scale-105'}`}
+          >
+            {isListening ? (
+              <div className="relative">
+                <MicOff size={48} className="text-white" />
+                <div className="absolute inset-0 bg-white/20 rounded-full animate-ping -z-10" />
               </div>
-            );
-          })}
+            ) : (
+              <Mic size={48} className="text-white" />
+            )}
+          </button>
+          
+          <div className="text-center space-y-2">
+            <h3 className="text-2xl font-black tracking-tight uppercase">{isListening ? 'Assistant Active' : 'Activate Voice'}</h3>
+            <p className="text-slate-500 font-medium max-w-xs mx-auto">"Read my notifications" or "Play some music"</p>
+          </div>
         </div>
 
+        {/* Dynamic Error Messaging */}
         {error && (
-          <div className="flex items-start gap-4 text-red-400 text-xs font-bold bg-red-400/5 p-5 rounded-2xl border border-red-400/10 animate-in fade-in slide-in-from-top-2">
-            <AlertCircle size={18} className="shrink-0" />
-            <div className="flex-1 space-y-1">
-              <p className="uppercase tracking-tight">Access Interrupted</p>
-              <p className="font-medium opacity-80">{error}</p>
-            </div>
-            <button onClick={() => setError(null)} className="text-red-400 hover:text-red-300 underline font-black uppercase">Dismiss</button>
+          <div className="mt-4 p-4 bg-red-500/10 border border-red-500/20 rounded-2xl flex items-center gap-3 text-red-400 text-sm font-bold">
+            <AlertCircle size={20} />
+            {error}
           </div>
         )}
+
+        {/* Live Conversation Logs */}
+        <div className="mt-8 border-t border-slate-800 pt-8 max-h-48 overflow-y-auto custom-scrollbar space-y-4">
+          {transcription.map((text, i) => (
+            <div key={i} className={`flex items-start gap-3 text-sm font-medium ${text.startsWith('User') ? 'text-slate-400' : 'text-blue-400'}`}>
+              {text.startsWith('User') ? <Activity size={16} className="mt-0.5" /> : <Sparkles size={16} className="mt-0.5" />}
+              <span>{text.split(': ')[1]}</span>
+            </div>
+          ))}
+          {transcription.length === 0 && (
+            <div className="text-center text-slate-600 text-xs font-bold uppercase tracking-widest py-4">
+              Real-time Logs
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
