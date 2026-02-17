@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useRef } from 'react';
 import { Mic, MicOff, AlertCircle, Sparkles, Activity, Terminal } from 'lucide-react';
 import { GoogleGenAI, LiveServerMessage, Modality, Blob, Type, FunctionDeclaration } from '@google/genai';
@@ -9,6 +10,8 @@ interface VoiceInteractionProps {
     sendMessage: (recipient: string, text: string) => string;
     getNotifications: () => string;
     controlMedia: (action: string) => string;
+    getTime: () => string;
+    openUrl: (target: string) => string;
   };
 }
 
@@ -29,7 +32,7 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
   const currentInputTranscription = useRef('');
   const currentOutputTranscription = useRef('');
 
-  // Manual base64 utilities as required by Gemini Live rules
+  // Manual base64 utilities
   function encode(bytes: Uint8Array) {
     let binary = '';
     const len = bytes.byteLength;
@@ -49,7 +52,6 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
     return bytes;
   }
 
-  // Improved PCM decoding to handle data views correctly for raw streams
   async function decodeAudioData(
     data: Uint8Array,
     ctx: AudioContext,
@@ -74,10 +76,7 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
       name: 'add_note',
       parameters: {
         type: Type.OBJECT,
-        properties: { 
-          title: { type: Type.STRING, description: 'Short descriptive title for the note.' }, 
-          content: { type: Type.STRING, description: 'The detailed content of the note.' } 
-        },
+        properties: { title: { type: Type.STRING }, content: { type: Type.STRING } },
         required: ['title', 'content']
       }
     },
@@ -85,7 +84,7 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
       name: 'add_task',
       parameters: {
         type: Type.OBJECT,
-        properties: { text: { type: Type.STRING, description: 'Task description.' } },
+        properties: { text: { type: Type.STRING } },
         required: ['text']
       }
     },
@@ -93,10 +92,7 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
       name: 'send_message',
       parameters: {
         type: Type.OBJECT,
-        properties: { 
-          recipient: { type: Type.STRING, description: 'Name of the contact.' }, 
-          text: { type: Type.STRING, description: 'Message content.' } 
-        },
+        properties: { recipient: { type: Type.STRING }, text: { type: Type.STRING } },
         required: ['recipient', 'text']
       }
     },
@@ -104,13 +100,21 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
       name: 'control_multimedia',
       parameters: {
         type: Type.OBJECT,
-        properties: { 
-          action: { type: Type.STRING, description: 'Action to perform: play, pause, next, capture' } 
-        },
+        properties: { action: { type: Type.STRING } },
         required: ['action']
       }
     },
-    { name: 'get_notifications', parameters: { type: Type.OBJECT, properties: {} } }
+    { name: 'get_notifications', parameters: { type: Type.OBJECT, properties: {} } },
+    { name: 'get_current_time', parameters: { type: Type.OBJECT, properties: {} } },
+    {
+      name: 'open_website',
+      parameters: {
+        type: Type.OBJECT,
+        properties: { target: { type: Type.STRING, description: 'Website to open, e.g., YouTube, Google' } },
+        required: ['target']
+      }
+    },
+    { name: 'stop_assistant', parameters: { type: Type.OBJECT, properties: {} } }
   ];
 
   const stopSession = () => {
@@ -142,12 +146,10 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
   const startSession = async () => {
     try {
       setError(null);
-      setStatus('Initializing Neural Feed...');
+      setStatus('Initializing...');
       
       const apiKey = process.env.API_KEY;
-      if (!apiKey) {
-        throw new Error("API Key is not configured in the environment.");
-      }
+      if (!apiKey) throw new Error("API Key missing.");
 
       const AudioContextClass = (window.AudioContext || (window as any).webkitAudioContext);
       const inputCtx = new AudioContextClass({ sampleRate: 16000 });
@@ -169,14 +171,11 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
           onopen: () => {
             setStatus('V1 Online');
             setIsListening(true);
-            
             const source = inputCtx.createMediaStreamSource(stream);
             const scriptProcessor = inputCtx.createScriptProcessor(4096, 1, 1);
             
             scriptProcessor.onaudioprocess = (e) => {
               const inputData = e.inputBuffer.getChannelData(0);
-              
-              // Local feedback level
               let sum = 0;
               for (let i = 0; i < inputData.length; i++) sum += Math.abs(inputData[i]);
               setInputLevel(sum / inputData.length);
@@ -188,7 +187,6 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
                 data: encode(new Uint8Array(int16.buffer)), 
                 mimeType: 'audio/pcm;rate=16000' 
               };
-              
               sessionPromise.then(s => s.sendRealtimeInput({ media: pcmBlob })).catch(() => {});
             };
             
@@ -196,7 +194,7 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
             scriptProcessor.connect(inputCtx.destination);
           },
           onmessage: async (message: LiveServerMessage) => {
-            // Audio output bytes processing
+            // Audio playback
             const base64Audio = message.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
             if (base64Audio && audioContextRef.current) {
               const ctx = audioContextRef.current;
@@ -232,35 +230,37 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
               currentOutputTranscription.current = '';
             }
 
-            // Stop playback on interruption
+            // Tools (Python Script Translation)
+            if (message.toolCall) {
+              for (const fc of message.toolCall.functionCalls) {
+                let res: any = "Success";
+                if (fc.name === 'get_current_time') res = handlers.getTime();
+                else if (fc.name === 'open_website') res = handlers.openUrl(fc.args.target as string);
+                else if (fc.name === 'stop_assistant') {
+                  res = "Shutting down. Goodbye.";
+                  setTimeout(stopSession, 1500);
+                }
+                else if (fc.name === 'add_note') res = handlers.addNote(fc.args.title as string, fc.args.content as string);
+                else if (fc.name === 'add_task') res = handlers.addTask(fc.args.text as string);
+                else if (fc.name === 'send_message') res = handlers.sendMessage(fc.args.recipient as string, fc.args.text as string);
+                else if (fc.name === 'control_multimedia') res = handlers.controlMedia(fc.args.action as string);
+                else if (fc.name === 'get_notifications') res = handlers.getNotifications();
+
+                sessionPromise.then(s => s.sendToolResponse({
+                  functionResponses: [{ id: fc.id, name: fc.name, response: { result: res } }]
+                }));
+              }
+            }
+
             if (message.serverContent?.interrupted) {
               sourcesRef.current.forEach(s => { try { s.stop(); } catch(e){} });
               sourcesRef.current.clear();
               nextStartTimeRef.current = 0;
             }
-
-            // Handle Tools
-            if (message.toolCall) {
-              for (const fc of message.toolCall.functionCalls) {
-                let response: any = "Success";
-                try {
-                  if (fc.name === 'add_note') response = handlers.addNote(fc.args.title as string, fc.args.content as string);
-                  if (fc.name === 'add_task') response = handlers.addTask(fc.args.text as string);
-                  if (fc.name === 'send_message') response = handlers.sendMessage(fc.args.recipient as string, fc.args.text as string);
-                  if (fc.name === 'control_multimedia') response = handlers.controlMedia(fc.args.action as string);
-                  if (fc.name === 'get_notifications') response = handlers.getNotifications();
-                } catch (e) {
-                  response = { error: (e as Error).message };
-                }
-                sessionPromise.then(s => s.sendToolResponse({
-                  functionResponses: [{ id: fc.id, name: fc.name, response: { result: response } }]
-                }));
-              }
-            }
           },
           onerror: (e) => {
             console.error('Session Error:', e);
-            setError('Neural Link Failure: Re-authentication required.');
+            setError('Neural Link Failure.');
             stopSession();
           },
           onclose: () => {
@@ -272,15 +272,14 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
           responseModalities: [Modality.AUDIO],
           speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Zephyr' } } },
           tools: [{ functionDeclarations: tools }],
-          systemInstruction: "You are V1, a high-end personal AI assistant. You help the user with study, multimedia, and daily coordination. Be professional, slightly futuristic, and extremely efficient. Use the provided tools whenever appropriate.",
+          systemInstruction: "You are V1, your AI assistant. Greet the user with 'Hello, I am your AI assistant'. You can check the time, open Google/YouTube, or answer questions. If asked to 'exit' or 'stop', use the stop_assistant tool and say 'Shutting down. Goodbye.' Be concise and efficient.",
           inputAudioTranscription: {},
           outputAudioTranscription: {}
         }
       });
       sessionPromiseRef.current = sessionPromise;
     } catch (err: any) {
-      console.error('HW Init Error:', err);
-      setError(err.message || 'HW Access Denied: Check Microphone Permissions.');
+      setError(err.message || 'HW Access Denied.');
       setStatus('System Ready');
     }
   };
@@ -291,7 +290,6 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
 
   return (
     <div className="flex flex-col items-center justify-center h-full max-w-4xl mx-auto px-4 gap-12">
-      {/* V1 Visual Identity */}
       <div className="text-center space-y-6 animate-in fade-in zoom-in duration-700">
         <div className="flex justify-center">
           <div className="relative">
@@ -311,7 +309,6 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
         </div>
       </div>
 
-      {/* Main Command Orb */}
       <div className="relative flex flex-col items-center gap-10">
         <button 
           onClick={isListening ? stopSession : startSession}
@@ -334,46 +331,24 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
           ) : (
             <div className="relative">
               <Mic size={80} className="text-slate-700 group-hover:text-blue-500 transition-all duration-500 transform group-hover:scale-110" />
-              <div className="absolute -inset-4 bg-blue-500/20 rounded-full blur-xl opacity-0 group-hover:opacity-100 transition-opacity" />
             </div>
           )}
           
           <div className="absolute bottom-12 flex flex-col items-center gap-2">
-            <div className={`flex gap-1 transition-opacity duration-500 ${isListening ? 'opacity-100' : 'opacity-0'}`}>
-              <div className="w-1 h-1 rounded-full bg-blue-400 animate-ping" />
-              <div className="w-1 h-1 rounded-full bg-blue-400 animate-ping delay-75" />
-              <div className="w-1 h-1 rounded-full bg-blue-400 animate-ping delay-150" />
-            </div>
             <span className={`text-[11px] font-black uppercase tracking-[0.5em] ${isListening ? 'text-blue-400' : 'text-slate-600'}`}>
-              {isListening ? 'Connected' : 'Engage V1'}
+              {isListening ? 'Listening' : 'Engage V1'}
             </span>
           </div>
         </button>
-
-        {/* Dynamic Level Array */}
-        {isListening && (
-          <div className="w-64 h-1.5 bg-slate-900/50 rounded-full overflow-hidden border border-white/5 shadow-inner">
-             <div 
-               className="h-full bg-gradient-to-r from-blue-600 to-blue-400 transition-all duration-75 shadow-[0_0_20px_rgba(59,130,246,0.5)]" 
-               style={{ width: `${Math.min(inputLevel * 2000, 100)}%` }} 
-             />
-          </div>
-        )}
       </div>
 
-      {/* Real-time Interaction Log */}
       <div className="w-full space-y-6">
         <div className="flex justify-between items-center px-4">
           <div className="flex items-center gap-3 px-6 py-2.5 rounded-full bg-slate-900/60 border border-white/5 text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] backdrop-blur-xl">
              <div className={`w-2 h-2 rounded-full ${isListening ? 'bg-emerald-400 animate-pulse' : 'bg-slate-700'}`} />
              {status}
           </div>
-          <button 
-            onClick={() => setTranscription([])}
-            className="text-[10px] font-black text-slate-600 uppercase tracking-widest hover:text-white transition-colors"
-          >
-            Clear Log
-          </button>
+          <button onClick={() => setTranscription([])} className="text-[10px] font-black text-slate-600 uppercase hover:text-white transition-colors">Clear Log</button>
         </div>
 
         <div className="glass-panel rounded-[3rem] p-10 min-h-[200px] max-h-[400px] overflow-y-auto custom-scrollbar border-white/5 flex flex-col gap-6 shadow-inner relative">
@@ -389,29 +364,18 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
             <div key={i} className={`flex ${t.type === 'user' ? 'justify-end' : 'justify-start'} animate-in slide-in-from-bottom-4 duration-500`}>
               <div className={`group relative px-8 py-4 rounded-[2rem] text-sm font-medium max-w-[80%] leading-relaxed transition-all ${t.type === 'user' ? 'bg-slate-800/80 text-slate-200 border border-white/5' : 'bg-blue-600/10 text-blue-100 border border-blue-500/20 shadow-[0_0_40px_rgba(59,130,246,0.05)]'}`}>
                 {t.text}
-                <div className={`absolute -bottom-6 flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity ${t.type === 'user' ? 'right-4' : 'left-4'}`}>
-                   <span className="text-[8px] font-black uppercase tracking-widest text-slate-600">{t.type === 'user' ? 'Transmission' : 'V1 Response'}</span>
-                </div>
               </div>
             </div>
           ))}
         </div>
 
         {error && (
-          <div className="flex items-center gap-5 p-6 bg-red-500/5 border border-red-500/10 rounded-[2rem] animate-in slide-in-from-top-6 duration-500 shadow-2xl">
-            <div className="p-3 bg-red-500/10 rounded-2xl">
-              <AlertCircle className="text-red-500" size={24} />
-            </div>
+          <div className="flex items-center gap-5 p-6 bg-red-500/5 border border-red-500/10 rounded-[2rem] animate-in slide-in-from-top-6 duration-500">
+            <div className="p-3 bg-red-500/10 rounded-2xl"><AlertCircle className="text-red-500" size={24} /></div>
             <div className="flex-1 space-y-1">
               <p className="text-red-400 text-xs font-black uppercase tracking-widest">Neural Link Failure</p>
               <p className="text-red-200/60 text-sm font-medium">{error}</p>
             </div>
-            <button 
-              onClick={() => setError(null)} 
-              className="px-6 py-2 bg-red-500/10 text-red-400 text-[10px] font-black uppercase rounded-full hover:bg-red-500/20 transition-all"
-            >
-              Dismiss
-            </button>
           </div>
         )}
       </div>

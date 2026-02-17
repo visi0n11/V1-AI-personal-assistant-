@@ -7,10 +7,7 @@ import {
   Bell, 
   Image as ImageIcon, 
   Settings, 
-  User, 
-  LogOut,
-  LogIn,
-  UserPlus
+  User
 } from 'lucide-react';
 import { ModuleType, Task, Note, Message, AppNotification } from './types.ts';
 import VoiceInteraction from './components/VoiceInteraction.tsx';
@@ -80,7 +77,16 @@ const App: React.FC = () => {
       }
       return `Media ${action}ed.`;
     },
-    getNotifications: () => JSON.stringify(notifications)
+    getNotifications: () => JSON.stringify(notifications),
+    getTime: () => new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    openUrl: (target: string) => {
+      let url = target.toLowerCase();
+      if (url.includes('google')) url = 'https://google.com';
+      else if (url.includes('youtube')) url = 'https://youtube.com';
+      else if (!url.startsWith('http')) url = `https://${url}`;
+      window.open(url, '_blank');
+      return `Opening ${url}`;
+    }
   };
 
   const modules = [
