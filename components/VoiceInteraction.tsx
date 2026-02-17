@@ -40,7 +40,8 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
   };
 
   const decodeAudioData = async (data: Uint8Array, ctx: AudioContext, sampleRate: number, numChannels: number): Promise<AudioBuffer> => {
-    const dataInt16 = new Int16Array(data.buffer);
+    // Correctly handle buffer offset for PCM data
+    const dataInt16 = new Int16Array(data.buffer, data.byteOffset, data.byteLength / 2);
     const frameCount = dataInt16.length / numChannels;
     const buffer = ctx.createBuffer(numChannels, frameCount, sampleRate);
     for (let channel = 0; channel < numChannels; channel++) {
@@ -91,24 +92,18 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
   const startSession = async () => {
     try {
       setError(null);
+      setStatus('Connecting to V1 Neural Network...');
       
-      const apiKey = process.env.API_KEY;
-      if (!apiKey) {
-        setError('API Key is missing. Ensure the environment is correctly configured.');
-        return;
-      }
-
-      setStatus('Syncing with V1 Hub...');
+      // Initialize AI Core - Relying on process.env.API_KEY injection
+      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
       
-      const ai = new GoogleGenAI({ apiKey });
       const AudioContextClass = (window.AudioContext || (window as any).webkitAudioContext);
-      
       const inputCtx = new AudioContextClass({ sampleRate: 16000 });
       const outputCtx = new AudioContextClass({ sampleRate: 24000 });
       
-      // Crucial: Resume contexts to handle browser autoplay policies
-      if (inputCtx.state === 'suspended') await inputCtx.resume();
-      if (outputCtx.state === 'suspended') await outputCtx.resume();
+      // Strict Browser Policy: Resume contexts
+      await inputCtx.resume();
+      await outputCtx.resume();
       
       inputAudioContextRef.current = inputCtx;
       audioContextRef.current = outputCtx;
@@ -128,15 +123,16 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
             scriptProcessor.onaudioprocess = (e) => {
               const inputData = e.inputBuffer.getChannelData(0);
               
-              // Calculate local mic level for the UI feedback
+              // Local Monitor logic
               let sum = 0;
               for (let i = 0; i < inputData.length; i++) sum += Math.abs(inputData[i]);
               setInputLevel(sum / inputData.length);
 
               const int16 = new Int16Array(inputData.length);
               for (let i = 0; i < inputData.length; i++) int16[i] = inputData[i] * 32768;
+              
               const pcmBlob: Blob = { 
-                data: encode(new Uint8Array(int16.buffer)), 
+                data: encode(new Uint8Array(int16.buffer, int16.byteOffset, int16.byteLength)), 
                 mimeType: 'audio/pcm;rate=16000' 
               };
               
@@ -149,7 +145,7 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
           onmessage: async (message: LiveServerMessage) => {
             if (message.toolCall) {
               for (const fc of message.toolCall.functionCalls) {
-                let result = "Action performed.";
+                let result = "Done.";
                 try {
                   if (fc.name === 'add_note') result = handlers.addNote(fc.args.title as string, fc.args.content as string);
                   if (fc.name === 'add_task') result = handlers.addTask(fc.args.text as string);
@@ -157,7 +153,7 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
                   if (fc.name === 'control_multimedia') result = handlers.controlMedia(fc.args.action as string);
                   if (fc.name === 'get_notifications') result = handlers.getNotifications();
                 } catch (e) {
-                  result = "Internal system error during execution.";
+                  result = "System error during tool execution.";
                 }
                 
                 sessionPromise.then(s => s.sendToolResponse({
@@ -192,7 +188,8 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
             }
           },
           onerror: (e) => { 
-            setError(`Neural Link Error: ${((e as any)?.message || 'Check your internet connection')}`); 
+            console.error("Session Error:", e);
+            setError(`Neural link failed. Ensure your API key is correct.`); 
             stopSession(); 
           },
           onclose: () => { 
@@ -202,7 +199,7 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
         },
         config: {
           responseModalities: [Modality.AUDIO],
-          systemInstruction: 'You are V1, a high-performance personal assistant. Use tools to manage notes, tasks, and multimedia. Speak naturally and helpful.',
+          systemInstruction: 'You are V1, a high-performance personal assistant. Be efficient. Use tools to manage users life. Be professional but friendly.',
           tools: [{ functionDeclarations: tools }],
           outputAudioTranscription: {},
           inputAudioTranscription: {},
@@ -210,7 +207,8 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
       });
       sessionRef.current = await sessionPromise;
     } catch (err: any) {
-      setError(`Hardware Exception: ${err.message || 'Mic access failed'}. Please refresh and allow microphone permissions.`);
+      console.error("Start Error:", err);
+      setError(`Hardware error: ${err.message || 'Microphone access denied'}.`);
       setStatus('Ready');
     }
   };
@@ -262,7 +260,6 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
           </div>
         </button>
 
-        {/* Local Mic Input Level Monitor */}
         {isListening && (
           <div className="mt-8 w-48 h-1 bg-slate-900 rounded-full overflow-hidden border border-slate-800 shadow-lg">
              <div 

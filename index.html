@@ -5,8 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>V1 AI Personal Assistant</title>
     <script>
-      // Global process safety layer - only set defaults if not already present
-      window.process = window.process || { env: {} };
+      // Ensure process.env exists without overwriting existing process object
+      window.process = window.process || {};
       window.process.env = window.process.env || {};
     </script>
     <script src="https://cdn.tailwindcss.com"></script>
