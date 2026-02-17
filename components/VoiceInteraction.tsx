@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useRef } from 'react';
 import { Mic, MicOff, AlertCircle, Sparkles, Activity, Terminal, ExternalLink, Clock, Power } from 'lucide-react';
 import { GoogleGenAI, LiveServerMessage, Modality, Blob, Type, FunctionDeclaration } from '@google/genai';
@@ -112,6 +111,20 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
       description: 'Opens a website in a new browser tab.'
     },
     {
+      name: 'control_multimedia',
+      parameters: {
+        type: Type.OBJECT,
+        properties: { 
+          action: { 
+            type: Type.STRING, 
+            description: 'The media action to perform. Supported: "play", "pause", "next", "capture"' 
+          } 
+        },
+        required: ['action']
+      },
+      description: 'Controls music playback or captures a photo.'
+    },
+    {
       name: 'stop_assistant',
       parameters: { type: Type.OBJECT, properties: {} },
       description: 'Shuts down the assistant session gracefully.'
@@ -160,7 +173,6 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
 
-      // Always initialize with the latest process.env.API_KEY
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       const sessionPromise = ai.live.connect({
         model: 'gemini-2.5-flash-native-audio-preview-12-2025',
@@ -192,7 +204,6 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
             scriptProcessor.connect(inputCtx.destination);
           },
           onmessage: async (message: LiveServerMessage) => {
-            // Audio output stream handling
             const base64Audio = message.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
             if (base64Audio && audioContextRef.current) {
               const ctx = audioContextRef.current;
@@ -207,7 +218,6 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
               sourcesRef.current.add(source);
             }
 
-            // Real-time text transcriptions
             if (message.serverContent?.outputTranscription) {
               currentOutputTranscription.current += message.serverContent.outputTranscription.text;
             } else if (message.serverContent?.inputTranscription) {
@@ -228,7 +238,6 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
               currentOutputTranscription.current = '';
             }
 
-            // Function Calling Integration (Python Logic Translation)
             if (message.toolCall) {
               for (const fc of message.toolCall.functionCalls) {
                 let response: any = "Success";
@@ -238,7 +247,6 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
                   response = handlers.openUrl(fc.args.target as string);
                 } else if (fc.name === 'stop_assistant') {
                   response = "Shutting down. Goodbye.";
-                  // Brief delay to allow the AI to finish speaking its farewell
                   setTimeout(stopSession, 2000);
                 } else if (fc.name === 'add_note') {
                   response = handlers.addNote(fc.args.title as string, fc.args.content as string);
@@ -246,6 +254,8 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
                   response = handlers.addTask(fc.args.text as string);
                 } else if (fc.name === 'get_notifications') {
                   response = handlers.getNotifications();
+                } else if (fc.name === 'control_multimedia') {
+                  response = handlers.controlMedia(fc.args.action as string);
                 }
 
                 sessionPromise.then(s => s.sendToolResponse({
@@ -274,7 +284,7 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
           responseModalities: [Modality.AUDIO],
           speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Zephyr' } } },
           tools: [{ functionDeclarations: tools }],
-          systemInstruction: "You are V1, your AI assistant. Greet the user with 'Hello, I am your AI assistant'. You help with time, web browsing (Google/YouTube), and productivity tasks. If asked to 'exit' or 'stop', use the stop_assistant tool and say 'Shutting down. Goodbye.' Stay concise, efficient, and helpful.",
+          systemInstruction: "You are V1, your AI assistant. Greet the user with 'Hello, I am your AI assistant'. You help with time, web browsing (Google/YouTube), multimedia control (play, pause, next track, capture photo), and productivity tasks. If asked to 'exit' or 'stop', use the stop_assistant tool and say 'Shutting down. Goodbye.' Stay concise, efficient, and helpful.",
           inputAudioTranscription: {},
           outputAudioTranscription: {}
         }
@@ -292,7 +302,6 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
 
   return (
     <div className="flex flex-col items-center justify-center h-full max-w-4xl mx-auto px-4 gap-12">
-      {/* Brand Identity */}
       <div className="text-center space-y-6 animate-in fade-in zoom-in duration-700">
         <div className="flex justify-center">
           <div className="relative">
@@ -312,7 +321,6 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
         </div>
       </div>
 
-      {/* Primary Interaction Orb */}
       <div className="relative flex flex-col items-center gap-12">
         <button 
           onClick={isListening ? stopSession : startSession}
@@ -346,7 +354,6 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
           </div>
         </button>
         
-        {/* Quick Suggestion Chips */}
         {!isListening && (
           <div className="flex gap-4 animate-in fade-in slide-in-from-bottom-2 duration-1000">
              {[
@@ -363,7 +370,6 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
         )}
       </div>
 
-      {/* Session Diagnostics & Logs */}
       <div className="w-full space-y-8">
         <div className="flex justify-between items-center px-6">
           <div className="flex items-center gap-4 px-6 py-3 rounded-full bg-slate-900/40 border border-white/5 text-[10px] font-black text-slate-400 uppercase tracking-widest backdrop-blur-2xl">
