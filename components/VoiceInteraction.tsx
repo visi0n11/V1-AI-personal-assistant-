@@ -1,5 +1,6 @@
+
 import React, { useState, useEffect, useRef } from 'react';
-import { Mic, MicOff, AlertCircle, Sparkles, Activity, Terminal, ExternalLink, Clock, Power } from 'lucide-react';
+import { Mic, MicOff, AlertCircle, Sparkles, Activity, Terminal, ExternalLink, Clock, Power, Key } from 'lucide-react';
 import { GoogleGenAI, LiveServerMessage, Modality, Blob, Type, FunctionDeclaration } from '@google/genai';
 
 interface VoiceInteractionProps {
@@ -20,6 +21,7 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
   const [status, setStatus] = useState<string>('System Standby');
   const [error, setError] = useState<string | null>(null);
   const [inputLevel, setInputLevel] = useState(0);
+  const [needsKey, setNeedsKey] = useState(false);
 
   const audioContextRef = useRef<AudioContext | null>(null);
   const inputAudioContextRef = useRef<AudioContext | null>(null);
@@ -30,6 +32,27 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
   
   const currentInputTranscription = useRef('');
   const currentOutputTranscription = useRef('');
+
+  // Check for API key on mount
+  useEffect(() => {
+    const checkKey = async () => {
+      if (typeof (window as any).aistudio !== 'undefined') {
+        const hasKey = await (window as any).aistudio.hasSelectedApiKey();
+        if (!hasKey && !process.env.API_KEY) {
+          setNeedsKey(true);
+        }
+      }
+    };
+    checkKey();
+  }, []);
+
+  const handleSelectKey = async () => {
+    if (typeof (window as any).aistudio !== 'undefined') {
+      await (window as any).aistudio.openSelectKey();
+      setNeedsKey(false);
+      setError(null);
+    }
+  };
 
   // Manual base64 utilities required for raw PCM data handling
   function encode(bytes: Uint8Array) {
@@ -91,10 +114,6 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
       }
     },
     {
-      name: 'get_notifications',
-      parameters: { type: Type.OBJECT, properties: {} }
-    },
-    {
       name: 'get_current_time',
       parameters: { type: Type.OBJECT, properties: {} },
       description: 'Check the current local time.'
@@ -117,12 +136,12 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
         properties: { 
           action: { 
             type: Type.STRING, 
-            description: 'The media action to perform. Supported: "play", "pause", "next", "capture"' 
+            description: 'The media action to perform. Valid actions: "play", "pause", "next", "capture"' 
           } 
         },
         required: ['action']
       },
-      description: 'Controls music playback or captures a photo.'
+      description: 'Controls music playback (play, pause, skip) or triggers a camera capture.'
     },
     {
       name: 'stop_assistant',
@@ -158,6 +177,13 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
   const startSession = async () => {
     try {
       setError(null);
+      
+      const apiKey = process.env.API_KEY;
+      if (!apiKey) {
+        setNeedsKey(true);
+        return;
+      }
+
       setStatus('Initializing Neural Bridge...');
       
       const AudioContextClass = (window.AudioContext || (window as any).webkitAudioContext);
@@ -173,7 +199,7 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
 
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+      const ai = new GoogleGenAI({ apiKey });
       const sessionPromise = ai.live.connect({
         model: 'gemini-2.5-flash-native-audio-preview-12-2025',
         callbacks: {
@@ -241,21 +267,23 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
             if (message.toolCall) {
               for (const fc of message.toolCall.functionCalls) {
                 let response: any = "Success";
-                if (fc.name === 'get_current_time') {
-                  response = handlers.getTime();
-                } else if (fc.name === 'open_website') {
-                  response = handlers.openUrl(fc.args.target as string);
-                } else if (fc.name === 'stop_assistant') {
-                  response = "Shutting down. Goodbye.";
-                  setTimeout(stopSession, 2000);
-                } else if (fc.name === 'add_note') {
-                  response = handlers.addNote(fc.args.title as string, fc.args.content as string);
-                } else if (fc.name === 'add_task') {
-                  response = handlers.addTask(fc.args.text as string);
-                } else if (fc.name === 'get_notifications') {
-                  response = handlers.getNotifications();
-                } else if (fc.name === 'control_multimedia') {
-                  response = handlers.controlMedia(fc.args.action as string);
+                try {
+                  if (fc.name === 'get_current_time') {
+                    response = handlers.getTime();
+                  } else if (fc.name === 'open_website') {
+                    response = handlers.openUrl(fc.args.target as string);
+                  } else if (fc.name === 'stop_assistant') {
+                    response = "Shutting down. Goodbye.";
+                    setTimeout(stopSession, 2000);
+                  } else if (fc.name === 'add_note') {
+                    response = handlers.addNote(fc.args.title as string, fc.args.content as string);
+                  } else if (fc.name === 'add_task') {
+                    response = handlers.addTask(fc.args.text as string);
+                  } else if (fc.name === 'control_multimedia') {
+                    response = handlers.controlMedia(fc.args.action as string);
+                  }
+                } catch (e) {
+                  response = "Error: " + (e as Error).message;
                 }
 
                 sessionPromise.then(s => s.sendToolResponse({
@@ -271,8 +299,11 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
             }
           },
           onerror: (e) => {
-            console.error('Session Critical Error:', e);
-            setError('Neural Link failed. Verify system configuration and permissions.');
+            const errorMsg = e instanceof Error ? e.message : 'Unknown error';
+            if (errorMsg.includes('Requested entity was not found')) {
+              setNeedsKey(true);
+            }
+            setError('Neural Link failed: ' + errorMsg);
             stopSession();
           },
           onclose: () => {
@@ -284,7 +315,7 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
           responseModalities: [Modality.AUDIO],
           speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Zephyr' } } },
           tools: [{ functionDeclarations: tools }],
-          systemInstruction: "You are V1, your AI assistant. Greet the user with 'Hello, I am your AI assistant'. You help with time, web browsing (Google/YouTube), multimedia control (play, pause, next track, capture photo), and productivity tasks. If asked to 'exit' or 'stop', use the stop_assistant tool and say 'Shutting down. Goodbye.' Stay concise, efficient, and helpful.",
+          systemInstruction: "You are V1, your AI assistant. Greet the user with 'Hello, I am your AI assistant'. You help with time, web browsing (Google/YouTube), multimedia control (play, pause, next track, capture photo), and productivity tasks. If asked to 'exit' or 'stop', use the stop_assistant tool and say 'Shutting down. Goodbye.' Stay concise and efficient.",
           inputAudioTranscription: {},
           outputAudioTranscription: {}
         }
@@ -322,51 +353,56 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
       </div>
 
       <div className="relative flex flex-col items-center gap-12">
-        <button 
-          onClick={isListening ? stopSession : startSession}
-          className={`relative w-80 h-80 rounded-full flex flex-col items-center justify-center transition-all duration-1000 group ${isListening ? 'bg-blue-600/5 border-2 border-blue-400 shadow-[0_0_120px_rgba(59,130,246,0.3)]' : 'bg-slate-900/40 border-2 border-slate-800 hover:border-blue-500/40 hover:bg-slate-900/60 shadow-2xl'}`}
-        >
-          {isListening ? (
-            <div className="flex gap-2.5 h-24 items-center">
-              {[...Array(20)].map((_, i) => (
-                <div 
-                  key={i} 
-                  className="w-1.5 bg-blue-400 rounded-full animate-bounce" 
-                  style={{ 
-                    height: `${20 + Math.random() * 80}%`, 
-                    animationDelay: `${i * 0.05}s`,
-                    opacity: 0.2 + (inputLevel * 20)
-                  }} 
-                />
-              ))}
+        {needsKey ? (
+          <div className="flex flex-col items-center gap-6 animate-in zoom-in duration-500">
+            <div className="p-10 bg-slate-900/80 border-2 border-dashed border-blue-500/30 rounded-[3rem] text-center max-w-sm space-y-6">
+              <Key size={48} className="mx-auto text-blue-400 mb-2" />
+              <h3 className="text-xl font-bold uppercase tracking-tight">API Key Required</h3>
+              <p className="text-slate-400 text-sm leading-relaxed">
+                To activate V1, you must link an API key from a paid GCP project. 
+              </p>
+              <button 
+                onClick={handleSelectKey}
+                className="w-full py-4 bg-blue-600 hover:bg-blue-500 text-white font-black uppercase tracking-widest rounded-2xl shadow-xl shadow-blue-600/30 transition-all active:scale-95 flex items-center justify-center gap-3"
+              >
+                Link Neural Key
+              </button>
+              <a href="https://ai.google.dev/gemini-api/docs/billing" target="_blank" className="block text-[10px] text-slate-600 hover:text-blue-400 transition-colors uppercase font-black tracking-widest">
+                Billing Documentation
+              </a>
             </div>
-          ) : (
-            <div className="relative">
-              <Mic size={96} className="text-slate-700 group-hover:text-blue-500 transition-all duration-700 transform group-hover:scale-110" />
-              <div className="absolute -inset-6 bg-blue-500/20 rounded-full blur-2xl opacity-0 group-hover:opacity-100 transition-opacity" />
+          </div>
+        ) : (
+          <button 
+            onClick={isListening ? stopSession : startSession}
+            className={`relative w-80 h-80 rounded-full flex flex-col items-center justify-center transition-all duration-1000 group ${isListening ? 'bg-blue-600/5 border-2 border-blue-400 shadow-[0_0_120px_rgba(59,130,246,0.3)]' : 'bg-slate-900/40 border-2 border-slate-800 hover:border-blue-500/40 hover:bg-slate-900/60 shadow-2xl'}`}
+          >
+            {isListening ? (
+              <div className="flex gap-2.5 h-24 items-center">
+                {[...Array(20)].map((_, i) => (
+                  <div 
+                    key={i} 
+                    className="w-1.5 bg-blue-400 rounded-full animate-bounce" 
+                    style={{ 
+                      height: `${20 + Math.random() * 80}%`, 
+                      animationDelay: `${i * 0.05}s`,
+                      opacity: 0.2 + (inputLevel * 20)
+                    }} 
+                  />
+                ))}
+              </div>
+            ) : (
+              <div className="relative">
+                <Mic size={96} className="text-slate-700 group-hover:text-blue-500 transition-all duration-700 transform group-hover:scale-110" />
+                <div className="absolute -inset-6 bg-blue-500/20 rounded-full blur-2xl opacity-0 group-hover:opacity-100 transition-opacity" />
+              </div>
+            )}
+            <div className="absolute bottom-16 flex flex-col items-center gap-3">
+              <span className={`text-[12px] font-black uppercase tracking-[0.6em] transition-colors duration-500 ${isListening ? 'text-blue-400' : 'text-slate-600'}`}>
+                {isListening ? 'Live Feed' : 'Engage V1'}
+              </span>
             </div>
-          )}
-          
-          <div className="absolute bottom-16 flex flex-col items-center gap-3">
-            <span className={`text-[12px] font-black uppercase tracking-[0.6em] transition-colors duration-500 ${isListening ? 'text-blue-400' : 'text-slate-600'}`}>
-              {isListening ? 'Live Feed' : 'Engage V1'}
-            </span>
-          </div>
-        </button>
-        
-        {!isListening && (
-          <div className="flex gap-4 animate-in fade-in slide-in-from-bottom-2 duration-1000">
-             {[
-               { icon: Clock, label: "What's the time?" },
-               { icon: ExternalLink, label: "Open YouTube" },
-               { icon: Power, label: "Stop assistant" }
-             ].map((chip, i) => (
-               <div key={i} className="px-4 py-2 bg-slate-900/50 border border-slate-800 rounded-full flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-slate-500">
-                  <chip.icon size={12} />
-                  {chip.label}
-               </div>
-             ))}
-          </div>
+          </button>
         )}
       </div>
 
@@ -414,6 +450,9 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
               <p className="text-red-400 text-xs font-black uppercase tracking-[0.3em]">Critical Exception</p>
               <p className="text-red-200/60 text-sm font-medium leading-relaxed">{error}</p>
             </div>
+            {error.includes('Key') && (
+              <button onClick={handleSelectKey} className="px-6 py-2 bg-blue-600 text-white text-xs font-black uppercase rounded-full">Reset Key</button>
+            )}
           </div>
         )}
       </div>
