@@ -1,5 +1,5 @@
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   Mic, 
   BookOpen, 
@@ -16,10 +16,23 @@ import Communication from './components/Communication.tsx';
 import NotificationManager from './components/NotificationManager.tsx';
 import Multimedia from './components/Multimedia.tsx';
 
+// Firebase imports
+import { db } from './firebase.ts';
+import { 
+  collection, 
+  onSnapshot, 
+  addDoc, 
+  updateDoc, 
+  deleteDoc, 
+  doc, 
+  query, 
+  orderBy,
+  getDocFromServer
+} from 'firebase/firestore';
+
 const App: React.FC = () => {
   const [activeModule, setActiveModule] = useState<ModuleType>(ModuleType.VOICE);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
-  const [isLoggedIn, setIsLoggedIn] = useState(false);
 
   // Multimedia State
   const [mediaState, setMediaState] = useState({
@@ -30,18 +43,9 @@ const App: React.FC = () => {
   });
 
   // Global Content State
-  const [tasks, setTasks] = useState<Task[]>([
-    { id: '1', text: 'Complete Calculus Assignment', completed: false, category: 'study' },
-    { id: '2', text: 'Review Bio-Chemistry notes', completed: true, category: 'study' },
-  ]);
-
-  const [notes, setNotes] = useState<Note[]>([
-    { id: '1', title: 'Neural Networks Basics', content: 'Focus on backpropagation and activation functions.', date: new Date().toLocaleDateString() },
-  ]);
-
-  const [messages, setMessages] = useState<Message[]>([
-    { id: '1', contactId: '1', text: "Hey! Can we meet at 5?", timestamp: '2:15 PM', incoming: true },
-  ]);
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [notes, setNotes] = useState<Note[]>([]);
+  const [messages, setMessages] = useState<Message[]>([]);
 
   const [notifications] = useState<AppNotification[]>([
     { id: '1', app: 'WhatsApp', sender: 'Mom', content: 'Did you finish your assignment?', timestamp: '5m ago' },
@@ -49,22 +53,103 @@ const App: React.FC = () => {
     { id: '3', app: 'Slack', sender: 'Dev Team', content: 'New deployment finished.', timestamp: '30m ago' },
   ]);
 
+  // Firestore Listeners
+  useEffect(() => {
+    // Test connection
+    const testConnection = async () => {
+      try {
+        await getDocFromServer(doc(db, 'test', 'connection'));
+      } catch (error) {
+        if(error instanceof Error && error.message.includes('the client is offline')) {
+          console.error("Please check your Firebase configuration.");
+        }
+      }
+    };
+    testConnection();
+
+    const tasksUnsubscribe = onSnapshot(collection(db, 'tasks'), (snapshot) => {
+      const tasksData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Task));
+      setTasks(tasksData);
+    }, (error) => console.error("Tasks listener error:", error));
+
+    const notesUnsubscribe = onSnapshot(collection(db, 'notes'), (snapshot) => {
+      const notesData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Note));
+      setNotes(notesData);
+    }, (error) => console.error("Notes listener error:", error));
+
+    const messagesUnsubscribe = onSnapshot(query(collection(db, 'messages'), orderBy('timestamp', 'asc')), (snapshot) => {
+      const messagesData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Message));
+      setMessages(messagesData);
+    }, (error) => console.error("Messages listener error:", error));
+
+    return () => {
+      tasksUnsubscribe();
+      notesUnsubscribe();
+      messagesUnsubscribe();
+    };
+  }, []);
+
+  // Firestore Actions
+  const toggleTask = async (taskId: string, completed: boolean) => {
+    try {
+      await updateDoc(doc(db, 'tasks', taskId), { completed: !completed });
+    } catch (error) {
+      console.error("Error toggling task:", error);
+    }
+  };
+
+  const deleteTask = async (taskId: string) => {
+    try {
+      await deleteDoc(doc(db, 'tasks', taskId));
+    } catch (error) {
+      console.error("Error deleting task:", error);
+    }
+  };
+
+  const deleteNote = async (noteId: string) => {
+    try {
+      await deleteDoc(doc(db, 'notes', noteId));
+    } catch (error) {
+      console.error("Error deleting note:", error);
+    }
+  };
+
   // AI Function Handlers
   const handlers = {
-    addNote: (title: string, content: string) => {
-      const newNote: Note = { id: Date.now().toString(), title, content, date: new Date().toLocaleDateString() };
-      setNotes(prev => [newNote, ...prev]);
-      return "Successfully added note: " + title;
+    addNote: async (title: string, content: string) => {
+      try {
+        const newNote = { title, content, date: new Date().toLocaleDateString() };
+        await addDoc(collection(db, 'notes'), newNote);
+        return "Successfully added note: " + title;
+      } catch (error) {
+        console.error("Error adding note:", error);
+        return "Failed to add note.";
+      }
     },
-    addTask: (text: string) => {
-      const newTask: Task = { id: Date.now().toString(), text, completed: false, category: 'study' };
-      setTasks(prev => [newTask, ...prev]);
-      return "Added task to study list: " + text;
+    addTask: async (text: string) => {
+      try {
+        const newTask = { text, completed: false, category: 'study' };
+        await addDoc(collection(db, 'tasks'), newTask);
+        return "Added task to study list: " + text;
+      } catch (error) {
+        console.error("Error adding task:", error);
+        return "Failed to add task.";
+      }
     },
-    sendMessage: (recipient: string, text: string) => {
-      const newMsg: Message = { id: Date.now().toString(), contactId: 'unknown', text: `To ${recipient}: ${text}`, timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }), incoming: false };
-      setMessages(prev => [...prev, newMsg]);
-      return `Message sent to ${recipient}.`;
+    sendMessage: async (recipient: string, text: string) => {
+      try {
+        const newMsg = { 
+          contactId: 'unknown', 
+          text: `To ${recipient}: ${text}`, 
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }), 
+          incoming: false 
+        };
+        await addDoc(collection(db, 'messages'), newMsg);
+        return `Message sent to ${recipient}.`;
+      } catch (error) {
+        console.error("Error sending message:", error);
+        return "Failed to send message.";
+      }
     },
     controlMedia: (action: string) => {
       if (action === 'play') setMediaState(s => ({ ...s, isPlaying: true }));
@@ -137,22 +222,15 @@ const App: React.FC = () => {
           </div>
 
           <div className="flex items-center gap-4">
-            {isLoggedIn ? (
-              <div className="flex items-center gap-4">
-                <div className="text-right hidden sm:block">
-                  <div className="text-sm font-bold">Alex StudyAccount</div>
-                  <div className="text-[10px] text-blue-400 uppercase tracking-widest font-black">Level 5 Assistant</div>
-                </div>
-                <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center border border-white/10 shadow-lg">
-                  <User size={20} />
-                </div>
+            <div className="flex items-center gap-4">
+              <div className="text-right hidden sm:block">
+                <div className="text-sm font-bold">Public Assistant</div>
+                <div className="text-[10px] text-blue-400 uppercase tracking-widest font-black">Level 5 Assistant</div>
               </div>
-            ) : (
-              <div className="flex items-center gap-3">
-                <button onClick={() => setIsLoggedIn(true)} className="px-5 py-2 text-sm font-bold text-slate-300 hover:text-white transition-all">Log In</button>
-                <button onClick={() => setIsLoggedIn(true)} className="px-5 py-2 text-sm font-bold text-white bg-blue-600 hover:bg-blue-500 rounded-xl shadow-lg shadow-blue-600/20 transition-all active:scale-95">Register</button>
+              <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center border border-white/10 shadow-lg">
+                <User size={20} />
               </div>
-            )}
+            </div>
           </div>
         </header>
 
@@ -160,8 +238,23 @@ const App: React.FC = () => {
         <div className="flex-1 overflow-y-auto p-6 md:p-10 custom-scrollbar">
           <div className="max-w-6xl mx-auto w-full h-full">
             {activeModule === ModuleType.VOICE && <VoiceInteraction handlers={handlers} />}
-            {activeModule === ModuleType.STUDY && <StudySupport tasks={tasks} notes={notes} />}
-            {activeModule === ModuleType.COMMUNICATION && <Communication messages={messages} />}
+            {activeModule === ModuleType.STUDY && (
+              <StudySupport 
+                tasks={tasks} 
+                notes={notes} 
+                onToggleTask={toggleTask}
+                onDeleteTask={deleteTask}
+                onDeleteNote={deleteNote}
+                onAddTask={handlers.addTask}
+                onAddNote={handlers.addNote}
+              />
+            )}
+            {activeModule === ModuleType.COMMUNICATION && (
+              <Communication 
+                messages={messages} 
+                onSendMessage={handlers.sendMessage}
+              />
+            )}
             {activeModule === ModuleType.NOTIFICATIONS && <NotificationManager notifications={notifications} />}
             {activeModule === ModuleType.MULTIMEDIA && <Multimedia mediaState={mediaState} setMediaState={setMediaState} />}
           </div>

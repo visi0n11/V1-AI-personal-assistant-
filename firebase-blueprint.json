@@ -1,0 +1,52 @@
+{
+  "entities": {
+    "Task": {
+      "title": "Task",
+      "description": "A study or personal task",
+      "type": "object",
+      "properties": {
+        "text": { "type": "string" },
+        "completed": { "type": "boolean" },
+        "category": { "type": "string", "enum": ["study", "personal", "work"] }
+      },
+      "required": ["text", "completed", "category"]
+    },
+    "Note": {
+      "title": "Note",
+      "description": "A personal study note",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "content": { "type": "string" },
+        "date": { "type": "string" }
+      },
+      "required": ["title", "content", "date"]
+    },
+    "Message": {
+      "title": "Message",
+      "description": "A simulated message",
+      "type": "object",
+      "properties": {
+        "contactId": { "type": "string" },
+        "text": { "type": "string" },
+        "timestamp": { "type": "string" },
+        "incoming": { "type": "boolean" }
+      },
+      "required": ["contactId", "text", "timestamp", "incoming"]
+    }
+  },
+  "firestore": {
+    "/tasks/{taskId}": {
+      "schema": "Task",
+      "description": "Collection of tasks"
+    },
+    "/notes/{noteId}": {
+      "schema": "Note",
+      "description": "Collection of notes"
+    },
+    "/messages/{messageId}": {
+      "schema": "Message",
+      "description": "Collection of messages"
+    }
+  }
+}
