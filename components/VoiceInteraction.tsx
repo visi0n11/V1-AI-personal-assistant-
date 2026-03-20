@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Mic, MicOff, AlertCircle, Sparkles, Activity, Terminal, ExternalLink, Clock, Power, Key, Cpu, Radio, Zap } from 'lucide-react';
+import { Mic, MicOff, AlertCircle, Sparkles, Activity, Terminal, ExternalLink, Clock, Power, Cpu, Radio, Zap } from 'lucide-react';
 import { GoogleGenAI, LiveServerMessage, Modality, Blob, Type, FunctionDeclaration } from '@google/genai';
 
 interface VoiceInteractionProps {
@@ -20,7 +20,6 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
   const [status, setStatus] = useState<string>('System Ready');
   const [error, setError] = useState<string | null>(null);
   const [inputLevel, setInputLevel] = useState(0);
-  const [needsKey, setNeedsKey] = useState(false);
 
   const audioContextRef = useRef<AudioContext | null>(null);
   const inputAudioContextRef = useRef<AudioContext | null>(null);
@@ -31,31 +30,6 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
   
   const currentInputTranscription = useRef('');
   const currentOutputTranscription = useRef('');
-
-  useEffect(() => {
-    const checkKey = async () => {
-      if (typeof (window as any).aistudio !== 'undefined') {
-        const hasKey = await (window as any).aistudio.hasSelectedApiKey();
-        if (!hasKey && !process.env.API_KEY) {
-          setNeedsKey(true);
-        }
-      }
-    };
-    checkKey();
-  }, []);
-
-  const handleLinkKey = async () => {
-    if (typeof (window as any).aistudio !== 'undefined') {
-      try {
-        await (window as any).aistudio.openSelectKey();
-        // Assume success after triggering the dialog to avoid race condition
-        setNeedsKey(false);
-        setError(null);
-      } catch (e) {
-        console.error("Failed to open key selector", e);
-      }
-    }
-  };
 
   function encode(bytes: Uint8Array) {
     let binary = '';
@@ -168,9 +142,9 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
   };
 
   const startSession = async () => {
-    const apiKey = process.env.API_KEY;
+    const apiKey = process.env.API_KEY || (window as any).GOOGLE_MAPS_PLATFORM_KEY; // Fallback or just process.env.API_KEY
     if (!apiKey) {
-      setNeedsKey(true);
+      setError("API Key not found in environment.");
       return;
     }
 
@@ -276,7 +250,6 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
           },
           onerror: (e) => {
             const msg = (e as any).message || 'Connection error';
-            if (msg.includes('entity was not found') || msg.includes('API key')) setNeedsKey(true);
             setError(msg);
             stopSession();
           },
@@ -324,37 +297,23 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
       </div>
 
       <div className="relative flex flex-col items-center gap-12 w-full">
-        {needsKey ? (
-          <div className="p-12 glass-panel rounded-[4rem] border-blue-500/20 text-center space-y-8 bg-slate-950/60 shadow-inner max-w-md w-full animate-in zoom-in duration-300">
-            <Key size={48} className="mx-auto text-blue-400" />
-            <h3 className="text-2xl font-black uppercase text-white">API Key Required</h3>
-            <p className="text-slate-500 text-sm">Authentication is required to initialize high-latency neural streams.</p>
-            <button onClick={handleLinkKey} className="w-full py-6 bg-blue-600 hover:bg-blue-500 text-white font-black uppercase tracking-[0.25em] text-[10px] rounded-3xl transition-all">
-              Authenticate Key
-            </button>
-            <a href="https://ai.google.dev/gemini-api/docs/billing" target="_blank" className="block text-[9px] text-slate-700 hover:text-blue-500 uppercase font-black tracking-widest pt-4">
-              Billing Documentation
-            </a>
-          </div>
-        ) : (
-          <button 
-            onClick={isListening ? stopSession : startSession}
-            className={`relative w-[24rem] h-[24rem] rounded-full flex flex-col items-center justify-center transition-all duration-1000 group ${isListening ? 'bg-blue-600/5 border-2 border-blue-400 shadow-[0_0_150px_rgba(59,130,246,0.25)]' : 'bg-slate-950 border-2 border-slate-900 hover:border-blue-500/40 shadow-2xl'}`}
-          >
-            {isListening ? (
-              <div className="flex gap-3 h-32 items-center">
-                {[...Array(24)].map((_, i) => (
-                  <div key={i} className="w-1.5 bg-blue-500 rounded-full animate-bounce" style={{ height: `${20 + Math.random() * 80}%`, animationDelay: `${i * 0.05}s`, opacity: 0.2 + (inputLevel * 20) }} />
-                ))}
-              </div>
-            ) : (
-              <Mic size={100} className="text-slate-800 group-hover:text-blue-500 transition-all duration-1000 transform group-hover:scale-110" />
-            )}
-            <span className={`absolute bottom-20 text-[12px] font-black uppercase tracking-[0.8em] transition-all duration-1000 ${isListening ? 'text-blue-400' : 'text-slate-800'}`}>
-              {isListening ? 'STREAM LIVE' : 'INITIATE SYNC'}
-            </span>
-          </button>
-        )}
+        <button 
+          onClick={isListening ? stopSession : startSession}
+          className={`relative w-[24rem] h-[24rem] rounded-full flex flex-col items-center justify-center transition-all duration-1000 group ${isListening ? 'bg-blue-600/5 border-2 border-blue-400 shadow-[0_0_150px_rgba(59,130,246,0.25)]' : 'bg-slate-950 border-2 border-slate-900 hover:border-blue-500/40 shadow-2xl'}`}
+        >
+          {isListening ? (
+            <div className="flex gap-3 h-32 items-center">
+              {[...Array(24)].map((_, i) => (
+                <div key={i} className="w-1.5 bg-blue-500 rounded-full animate-bounce" style={{ height: `${20 + Math.random() * 80}%`, animationDelay: `${i * 0.05}s`, opacity: 0.2 + (inputLevel * 20) }} />
+              ))}
+            </div>
+          ) : (
+            <Mic size={100} className="text-slate-800 group-hover:text-blue-500 transition-all duration-1000 transform group-hover:scale-110" />
+          )}
+          <span className={`absolute bottom-20 text-[12px] font-black uppercase tracking-[0.8em] transition-all duration-1000 ${isListening ? 'text-blue-400' : 'text-slate-800'}`}>
+            {isListening ? 'STREAM LIVE' : 'INITIATE SYNC'}
+          </span>
+        </button>
       </div>
 
       <div className="w-full space-y-8">

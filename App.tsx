@@ -6,8 +6,8 @@ import {
   Phone, 
   Bell, 
   Image as ImageIcon, 
-  Settings, 
-  User
+  Settings,
+  Sparkles
 } from 'lucide-react';
 import { ModuleType, Task, Note, Message, AppNotification } from './types.ts';
 import VoiceInteraction from './components/VoiceInteraction.tsx';
@@ -228,7 +228,7 @@ const App: React.FC = () => {
                 <div className="text-[10px] text-blue-400 uppercase tracking-widest font-black">Level 5 Assistant</div>
               </div>
               <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center border border-white/10 shadow-lg">
-                <User size={20} />
+                <Sparkles size={20} className="text-white" />
               </div>
             </div>
           </div>
