@@ -142,9 +142,9 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
   };
 
   const startSession = async () => {
-    const apiKey = process.env.GEMINI_API_KEY;
+    const apiKey = process.env.API_KEY || process.env.GEMINI_API_KEY;
     if (!apiKey) {
-      setError("Gemini API Key not found. Please ensure GEMINI_API_KEY is set in your environment variables.");
+      setError("API Key not found. Please ensure API_KEY is set in your environment variables.");
       return;
     }
 

@@ -36,8 +36,8 @@ const App: React.FC = () => {
   const [envError, setEnvError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!process.env.GEMINI_API_KEY) {
-      setEnvError("GEMINI_API_KEY is missing from the environment. Please set it in your environment variables.");
+    if (!process.env.API_KEY && !process.env.GEMINI_API_KEY) {
+      setEnvError("API_KEY is missing from the environment. Please set it in your environment variables.");
     }
   }, []);
 
