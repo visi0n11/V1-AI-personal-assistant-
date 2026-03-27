@@ -142,9 +142,9 @@ const VoiceInteraction: React.FC<VoiceInteractionProps> = ({ handlers }) => {
   };
 
   const startSession = async () => {
-    const apiKey = process.env.API_KEY || (window as any).GOOGLE_MAPS_PLATFORM_KEY; // Fallback or just process.env.API_KEY
+    const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
-      setError("API Key not found in environment.");
+      setError("Gemini API Key not found. Please ensure GEMINI_API_KEY is set in your environment variables.");
       return;
     }
 

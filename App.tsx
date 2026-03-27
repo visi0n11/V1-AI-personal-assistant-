@@ -33,6 +33,13 @@ import {
 const App: React.FC = () => {
   const [activeModule, setActiveModule] = useState<ModuleType>(ModuleType.VOICE);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const [envError, setEnvError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!process.env.GEMINI_API_KEY) {
+      setEnvError("GEMINI_API_KEY is missing from the environment. Please set it in your environment variables.");
+    }
+  }, []);
 
   // Multimedia State
   const [mediaState, setMediaState] = useState({
@@ -126,11 +133,11 @@ const App: React.FC = () => {
         return "Failed to add note.";
       }
     },
-    addTask: async (text: string) => {
+    addTask: async (text: string, category: 'study' | 'personal' | 'work' = 'study') => {
       try {
-        const newTask = { text, completed: false, category: 'study' };
+        const newTask = { text, completed: false, category };
         await addDoc(collection(db, 'tasks'), newTask);
-        return "Added task to study list: " + text;
+        return `Added task to ${category} list: ${text}`;
       } catch (error) {
         console.error("Error adding task:", error);
         return "Failed to add task.";
@@ -237,6 +244,12 @@ const App: React.FC = () => {
         {/* Module Display */}
         <div className="flex-1 overflow-y-auto p-6 md:p-10 custom-scrollbar">
           <div className="max-w-6xl mx-auto w-full h-full">
+            {envError && (
+              <div className="mb-6 p-4 bg-red-500/20 border border-red-500/50 rounded-2xl text-red-200 flex items-center gap-3 animate-in fade-in slide-in-from-top-4">
+                <Bell className="text-red-400" />
+                <p className="text-sm font-medium">{envError}</p>
+              </div>
+            )}
             {activeModule === ModuleType.VOICE && <VoiceInteraction handlers={handlers} />}
             {activeModule === ModuleType.STUDY && (
               <StudySupport 

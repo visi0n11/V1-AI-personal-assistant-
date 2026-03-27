@@ -9,7 +9,7 @@ interface StudySupportProps {
   onToggleTask: (id: string, completed: boolean) => void;
   onDeleteTask: (id: string) => void;
   onDeleteNote: (id: string) => void;
-  onAddTask: (text: string) => void;
+  onAddTask: (text: string, category: 'study' | 'personal' | 'work') => void;
   onAddNote: (title: string, content: string) => void;
 }
 
@@ -24,6 +24,7 @@ const StudySupport: React.FC<StudySupportProps> = ({
 }) => {
   const [showTaskForm, setShowTaskForm] = useState(false);
   const [newTaskText, setNewTaskText] = useState('');
+  const [newTaskCategory, setNewTaskCategory] = useState<'study' | 'personal' | 'work'>('study');
   
   const [showNoteForm, setShowNoteForm] = useState(false);
   const [newNoteTitle, setNewNoteTitle] = useState('');
@@ -32,7 +33,7 @@ const StudySupport: React.FC<StudySupportProps> = ({
   const handleAddTask = (e: React.FormEvent) => {
     e.preventDefault();
     if (newTaskText.trim()) {
-      onAddTask(newTaskText);
+      onAddTask(newTaskText, newTaskCategory);
       setNewTaskText('');
       setShowTaskForm(false);
     }
@@ -79,16 +80,34 @@ const StudySupport: React.FC<StudySupportProps> = ({
           </div>
 
           {showTaskForm && (
-            <form onSubmit={handleAddTask} className="glass-panel p-4 rounded-2xl flex gap-3 animate-in slide-in-from-top-2 duration-200">
-              <input 
-                type="text" 
-                value={newTaskText}
-                onChange={(e) => setNewTaskText(e.target.value)}
-                placeholder="What needs to be done?"
-                className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-4 py-2 focus:outline-none focus:border-blue-500"
-                autoFocus
-              />
-              <button type="submit" className="px-4 py-2 bg-blue-600 rounded-xl font-bold hover:bg-blue-500 transition-colors">Add</button>
+            <form onSubmit={handleAddTask} className="glass-panel p-4 rounded-2xl flex flex-col gap-4 animate-in slide-in-from-top-2 duration-200">
+              <div className="flex gap-3">
+                <input 
+                  type="text" 
+                  value={newTaskText}
+                  onChange={(e) => setNewTaskText(e.target.value)}
+                  placeholder="What needs to be done?"
+                  className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-4 py-2 focus:outline-none focus:border-blue-500"
+                  autoFocus
+                />
+                <button type="submit" className="px-4 py-2 bg-blue-600 rounded-xl font-bold hover:bg-blue-500 transition-colors">Add</button>
+              </div>
+              <div className="flex gap-2">
+                {(['study', 'personal', 'work'] as const).map((cat) => (
+                  <button
+                    key={cat}
+                    type="button"
+                    onClick={() => setNewTaskCategory(cat)}
+                    className={`px-3 py-1 rounded-lg text-xs font-bold uppercase tracking-wider transition-all ${
+                      newTaskCategory === cat 
+                        ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/20' 
+                        : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+                    }`}
+                  >
+                    {cat}
+                  </button>
+                ))}
+              </div>
             </form>
           )}
 
@@ -104,7 +123,10 @@ const StudySupport: React.FC<StudySupportProps> = ({
                   <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center transition-colors ${task.completed ? 'bg-blue-600 border-blue-600' : 'border-slate-700'}`}>
                     {task.completed && <CheckCircle2 size={14} className="text-white" />}
                   </div>
-                  <span className={task.completed ? 'line-through text-slate-500' : ''}>{task.text}</span>
+                  <div className="flex flex-col">
+                    <span className={task.completed ? 'line-through text-slate-500' : ''}>{task.text}</span>
+                    <span className="text-[10px] uppercase tracking-wider text-blue-400 font-black">{task.category}</span>
+                  </div>
                 </div>
                 <button 
                   onClick={() => onDeleteTask(task.id)}
